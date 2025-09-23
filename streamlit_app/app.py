@@ -1,10 +1,11 @@
 """Streamlit entry point for the Matsya management dashboard."""
 from __future__ import annotations
 
+import hashlib
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import pandas as pd
 import plotly.express as px
@@ -17,19 +18,11 @@ if str(ROOT_DIR) not in sys.path:
 
 from streamlit_app import data_loader, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation
-from streamlit_app.components import report, sidebar
+from streamlit_app.components import import_dashboard, report, sidebar
+from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
 
 
 st.set_page_config(page_title="松屋 計数管理ダッシュボード", layout="wide")
-
-
-def _to_csv_source(upload) -> Optional[bytes]:
-    if upload is None:
-        return None
-    upload.seek(0)
-    return upload.read()
-
-
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -77,6 +70,132 @@ def _comparison_dataset(
         )
         return transformers.apply_filters(df, comparison_filters)
     return df.head(0)
+
+
+CSV_VALIDATORS = {
+    "sales": data_loader.validate_sales_csv,
+    "inventory": data_loader.validate_inventory_csv,
+    "fixed_costs": data_loader.validate_fixed_costs_csv,
+}
+
+
+def _copy_datasets(datasets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+    return {name: df.copy() for name, df in datasets.items()}
+
+
+def _hash_bytes(payload: bytes) -> str:
+    return hashlib.md5(payload).hexdigest()
+
+
+def _handle_csv_uploads(
+    uploads: Dict[str, Optional[object]],
+    baseline: Dict[str, pd.DataFrame],
+) -> tuple[Dict[str, pd.DataFrame], Dict[str, data_loader.ValidationResult]]:
+    datasets = _copy_datasets(baseline)
+    validations: Dict[str, data_loader.ValidationResult] = {}
+
+    for dataset, upload in uploads.items():
+        if upload is None:
+            continue
+        validator = CSV_VALIDATORS.get(dataset)
+        if validator is None:
+            continue
+        file_bytes = upload.getvalue()
+        validation = validator(file_bytes)
+        validations[dataset] = validation
+
+        record_id = f"csv::{dataset}::{_hash_bytes(file_bytes)}"
+        source_label = f"CSV: {getattr(upload, 'name', 'uploaded_file')}"
+        import_dashboard.record_validation_import(
+            dataset,
+            source_label,
+            validation,
+            record_id=record_id,
+        )
+
+        if validation.valid:
+            datasets[dataset] = validation.dataframe
+
+    return datasets, validations
+
+
+def _handle_api_mode(
+    api_state: Dict[str, object],
+    baseline: Dict[str, pd.DataFrame],
+) -> tuple[Dict[str, pd.DataFrame], Optional[IntegrationResult]]:
+    provider = api_state.get("provider")
+    stored = st.session_state.get("api_datasets")
+    datasets = _copy_datasets(stored or baseline)
+    integration_result: Optional[IntegrationResult] = None
+
+    if not provider:
+        return datasets, st.session_state.get("latest_api_result")
+
+    credentials = {
+        key: value
+        for key, value in {
+            "api_key": api_state.get("api_key"),
+            "api_secret": api_state.get("api_secret"),
+        }.items()
+        if value
+    }
+
+    if api_state.get("auto_daily"):
+        auto_result = _maybe_auto_fetch(provider, credentials)
+        if auto_result:
+            _log_integration_result(auto_result)
+            datasets = _copy_datasets(auto_result.datasets)
+            st.session_state["api_datasets"] = datasets
+            st.session_state["latest_api_result"] = auto_result
+            integration_result = auto_result
+
+    if api_state.get("fetch_triggered"):
+        start_date = api_state.get("start_date")
+        end_date = api_state.get("end_date")
+        if isinstance(start_date, date) and isinstance(end_date, date):
+            manual_result = fetch_datasets(provider, start_date, end_date, credentials)
+            _log_integration_result(manual_result)
+            datasets = _copy_datasets(manual_result.datasets)
+            st.session_state["api_datasets"] = datasets
+            st.session_state["latest_api_result"] = manual_result
+            integration_result = manual_result
+
+    if integration_result is None:
+        stored_result = st.session_state.get("latest_api_result")
+        if stored_result is not None:
+            datasets = _copy_datasets(st.session_state.get("api_datasets", datasets))
+        integration_result = stored_result
+
+    return datasets, integration_result
+
+
+def _maybe_auto_fetch(
+    provider: str, credentials: Dict[str, str]
+) -> Optional[IntegrationResult]:
+    target_date = date.today() - timedelta(days=1)
+    state_key = f"auto_fetch::{provider}"
+    if st.session_state.get(state_key) == str(target_date):
+        return None
+    result = fetch_datasets(provider, target_date, target_date, credentials)
+    st.session_state[state_key] = str(target_date)
+    return result
+
+
+def _log_integration_result(result: IntegrationResult) -> None:
+    source_label = f"API: {result.provider}"
+    for dataset, df in result.datasets.items():
+        record_id = (
+            f"api::{result.provider}::{dataset}::{result.start_date:%Y%m%d}_{result.end_date:%Y%m%d}"
+            f"::{int(result.retrieved_at.timestamp())}"
+        )
+        import_dashboard.record_api_import(
+            dataset,
+            source_label,
+            df,
+            total_rows=result.row_counts.get(dataset, len(df)),
+            notes=result.period_label(),
+            record_id=record_id,
+        )
 
 
 def render_sales_tab(
@@ -363,43 +482,72 @@ def main() -> None:
     st.title("松屋 計数管理ダッシュボード")
 
     sample_files = data_loader.available_sample_files()
+    templates = data_loader.available_templates()
+    baseline = load_datasets(None, None, None)
 
-    datasets = load_datasets(
-        _to_csv_source(None),
-        _to_csv_source(None),
-        _to_csv_source(None),
-    )
+    if "current_datasets" not in st.session_state:
+        st.session_state["current_datasets"] = _copy_datasets(baseline)
+        st.session_state["current_source"] = "sample"
 
-    default_period = _default_period(datasets["sales"])
-    stores = transformers.extract_stores(datasets["sales"])
-    categories = transformers.extract_categories(datasets["sales"])
+    active_datasets = _copy_datasets(st.session_state.get("current_datasets", baseline))
+
+    default_period = _default_period(active_datasets["sales"])
+    stores = transformers.extract_stores(active_datasets["sales"])
+    categories = transformers.extract_categories(active_datasets["sales"])
+    provider_options = available_providers()
 
     sidebar_state = sidebar.render_sidebar(
         stores,
         categories,
         default_period=default_period,
         sample_files={k: str(v) for k, v in sample_files.items()},
+        templates=templates,
+        providers=provider_options,
     )
 
-    uploads = sidebar_state["uploads"]
-    datasets = load_datasets(
-        _to_csv_source(uploads["sales"]),
-        _to_csv_source(uploads["inventory"]),
-        _to_csv_source(uploads["fixed_costs"]),
-    )
+    mode = sidebar_state["data_source_mode"]
+    validation_results: Dict[str, data_loader.ValidationResult] = {}
+    integration_result: Optional[IntegrationResult] = None
+
+    if mode == "csv":
+        datasets, validation_results = _handle_csv_uploads(
+            sidebar_state["uploads"],
+            baseline,
+        )
+    elif mode == "api":
+        datasets, integration_result = _handle_api_mode(
+            sidebar_state["api"],
+            baseline,
+        )
+    else:
+        datasets = active_datasets
+
+    if not datasets:
+        datasets = active_datasets
+
+    for key, default_df in baseline.items():
+        datasets.setdefault(key, default_df.copy())
+
+    datasets["sales"] = transformers.prepare_sales_dataset(datasets["sales"])
+
+    st.session_state["current_datasets"] = _copy_datasets(datasets)
+    st.session_state["current_source"] = mode
 
     filters = sidebar_state["filters"]
     filtered_sales = transformers.apply_filters(datasets["sales"], filters)
     comparison_mode = sidebar_state["comparison_mode"]
     comparison_sales = _comparison_dataset(datasets["sales"], filters, comparison_mode)
 
-    tabs = st.tabs([
-        "売上分析",
-        "商品別分析",
-        "損益管理",
-        "在庫分析",
-        "経営シミュレーション",
-    ])
+    tabs = st.tabs(
+        [
+            "売上分析",
+            "商品別分析",
+            "損益管理",
+            "在庫分析",
+            "経営シミュレーション",
+            "データ取込管理",
+        ]
+    )
 
     with tabs[0]:
         render_sales_tab(filtered_sales, comparison_sales, filters)
@@ -415,6 +563,10 @@ def main() -> None:
 
     with tabs[4]:
         render_simulation_tab(pnl_df, filters)
+
+    with tabs[5]:
+        integration_display = integration_result or st.session_state.get("latest_api_result")
+        import_dashboard.render_dashboard(validation_results, integration_display)
 
     with st.sidebar:
         if sidebar_state["export_csv"]:

@@ -1,13 +1,19 @@
 """Streamlit entry point for the Matsya management dashboard."""
 from __future__ import annotations
 
+import sys
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Dict
 
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+ROOT_DIR = Path(__file__).resolve().parent.parent
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 from streamlit_app import data_loader, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation

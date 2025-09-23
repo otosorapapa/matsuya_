@@ -2,14 +2,17 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 from uuid import uuid4
 
 import pandas as pd
 import streamlit as st
 
-from streamlit_app.data_loader import ValidationResult
 from streamlit_app.integrations import IntegrationResult
+
+
+if TYPE_CHECKING:
+    from streamlit_app.data_loader import ValidationResult
 
 
 _HISTORY_KEY = "import_history"

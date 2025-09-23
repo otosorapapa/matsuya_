@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
+from typing import List
+
 import pandas as pd
 
 
@@ -58,12 +60,12 @@ def apply_filters(df: pd.DataFrame, filters: FilterState) -> pd.DataFrame:
     return dataset
 
 
-def extract_stores(df: pd.DataFrame) -> list[str]:
+def extract_stores(df: pd.DataFrame) -> List[str]:
     stores = sorted(df["store"].unique().tolist())
     return [ALL_STORES, *stores]
 
 
-def extract_categories(df: pd.DataFrame) -> list[str]:
+def extract_categories(df: pd.DataFrame) -> List[str]:
     categories = sorted(df["category"].unique().tolist())
     return [ALL_CATEGORIES, *categories]
 

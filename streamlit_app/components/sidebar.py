@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, List, Tuple
 
 import streamlit as st
 
@@ -33,13 +33,13 @@ def _resolve_date_range(value: Tuple[date, date]) -> Tuple[date, date]:
 
 
 def render_sidebar(
-    stores: list[str],
-    categories: list[str],
+    stores: List[str],
+    categories: List[str],
     *,
     default_period: Tuple[date, date],
     sample_files: Dict[str, str],
     templates: Dict[str, bytes],
-    providers: list[str],
+    providers: List[str],
 ) -> Dict[str, object]:
     st.sidebar.header("データソース")
     mode_label = st.sidebar.radio("連携方法", ["CSVアップロード", "API連携"])

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 from uuid import uuid4
 
 import pandas as pd
@@ -248,7 +248,7 @@ def _summarize_dataset(dataset: str, dataframe: pd.DataFrame) -> Dict[str, float
     return {}
 
 
-def _errors_to_records(errors_df: Optional[pd.DataFrame]) -> list[dict]:
+def _errors_to_records(errors_df: Optional[pd.DataFrame]) -> List[Dict[str, object]]:
     if errors_df is None or errors_df.empty:
         return []
     return errors_df.to_dict(orient="records")

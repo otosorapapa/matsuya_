@@ -5,7 +5,7 @@ import hashlib
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -40,7 +40,7 @@ def load_datasets(
     }
 
 
-def _default_period(df: pd.DataFrame) -> tuple[date, date]:
+def _default_period(df: pd.DataFrame) -> Tuple[date, date]:
     if df.empty:
         today = date.today()
         return today.replace(day=1), today
@@ -90,7 +90,7 @@ def _hash_bytes(payload: bytes) -> str:
 def _handle_csv_uploads(
     uploads: Dict[str, Optional[object]],
     baseline: Dict[str, pd.DataFrame],
-) -> tuple[Dict[str, pd.DataFrame], Dict[str, data_loader.ValidationResult]]:
+) -> Tuple[Dict[str, pd.DataFrame], Dict[str, data_loader.ValidationResult]]:
     datasets = _copy_datasets(baseline)
     validations: Dict[str, data_loader.ValidationResult] = {}
 
@@ -122,7 +122,7 @@ def _handle_csv_uploads(
 def _handle_api_mode(
     api_state: Dict[str, object],
     baseline: Dict[str, pd.DataFrame],
-) -> tuple[Dict[str, pd.DataFrame], Optional[IntegrationResult]]:
+) -> Tuple[Dict[str, pd.DataFrame], Optional[IntegrationResult]]:
     provider = api_state.get("provider")
     stored = st.session_state.get("api_datasets")
     datasets = _copy_datasets(stored or baseline)
@@ -280,7 +280,7 @@ def render_sales_tab(
 def render_products_tab(
     filtered_sales: pd.DataFrame,
     comparison_sales: pd.DataFrame,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
     st.subheader("ABC分析")
     abc_df = products.abc_analysis(filtered_sales, comparison_sales)
     if abc_df.empty:

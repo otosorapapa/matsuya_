@@ -90,13 +90,13 @@ def render_sales_tab(
 
     kpis = sales.kpi_summary(filtered_sales, comparison_sales)
     col1, col2, col3, col4, col5 = st.columns(5)
+    yoy_delta = (
+        f"{kpis['yoy_rate']*100:.1f}%" if kpis["yoy_rate"] is not None else None
+    )
     col1.metric(
         "期間売上",
         f"{kpis['total_sales']:,.0f} 円",
-        yoy_value if kpis["yoy_rate"] is not None else None,
-    )
-    yoy_value = (
-        f"{kpis['yoy_rate']*100:.1f}%" if kpis["yoy_rate"] is not None else "-"
+        yoy_delta,
     )
     col2.metric("粗利", f"{kpis['total_gross_profit']:,.0f} 円")
     col3.metric("平均客単価", f"{kpis['avg_unit_price']:,.0f} 円")

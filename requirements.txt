@@ -3,3 +3,4 @@ pandas>=1.5
 plotly>=5.15
 numpy>=1.23
 reportlab>=3.6
+streamlit-plotly-events>=0.0.6

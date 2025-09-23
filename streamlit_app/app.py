@@ -12,6 +12,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit_plotly_events import plotly_events
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
@@ -290,59 +291,226 @@ def render_sales_tab(
     col4.metric("来客数(販売数量)", f"{kpis['total_customers']:,.0f}")
     col5.metric("粗利率", f"{kpis['gross_margin']*100:.1f}%")
 
-    daily_df = sales.daily_timeseries(filtered_sales)
-    st.subheader("日次売上推移")
-    daily_chart = px.line(
-        daily_df,
-        x="date",
-        y="sales_amount",
-        markers=True,
-        labels={"date": "日付", "sales_amount": "売上金額"},
-    )
-    daily_chart.update_layout(hovermode="x unified")
-    st.plotly_chart(daily_chart, use_container_width=True)
+    granularity = filters.period_granularity
+    breakdown_column = sales.resolve_breakdown_column(filters.breakdown_dimension)
+    breakdown_label = sales.breakdown_label(filters.breakdown_dimension)
+    if breakdown_column is None:
+        breakdown_label = "全体"
 
-    st.subheader("月次売上と前年同月比")
-    monthly_df = sales.monthly_performance(filtered_sales, comparison_sales)
-    fig = go.Figure()
-    fig.add_bar(
-        x=monthly_df["month_label"],
-        y=monthly_df["sales_amount"],
-        name="当期売上",
+    timeseries_df = sales.timeseries_with_comparison(
+        filtered_sales, comparison_sales, granularity, breakdown_column
     )
-    if monthly_df["yoy_sales"].notna().any():
-        fig.add_trace(
+    custom_data = ["period_key"]
+    if breakdown_column:
+        custom_data.append(breakdown_column)
+
+    st.subheader(
+        f"{sales.granularity_label(granularity)}売上推移（{breakdown_label}）"
+    )
+    timeseries_chart = px.line(
+        timeseries_df,
+        x="period_label",
+        y="sales_amount",
+        color=breakdown_column if breakdown_column else None,
+        markers=True,
+        labels={"period_label": "期間", "sales_amount": "売上"},
+        custom_data=custom_data,
+    )
+    timeseries_chart.update_layout(
+        hovermode="x unified",
+        clickmode="event+select",
+        yaxis_title="売上",
+        xaxis_title="期間",
+        legend_title=breakdown_label if breakdown_column else None,
+    )
+    timeseries_chart.update_traces(mode="lines+markers")
+    selection = plotly_events(
+        timeseries_chart,
+        click_event=True,
+        select_event=True,
+        key=f"sales-timeseries-{granularity}-{breakdown_column or 'total'}",
+    )
+    st.caption("グラフをクリックすると該当期間の明細が表示されます。")
+
+    def _highlight_growth(value: float) -> str:
+        if pd.isna(value):
+            return ""
+        return "background-color: #ffe5e5" if value < 0 else "background-color: #e6f4ea"
+
+    summary_columns = [
+        "period_label",
+        "sales_amount",
+        "gross_profit",
+        "gross_margin",
+        "comparison_sales",
+        "comparison_gross_profit",
+        "comparison_margin",
+        "yoy_rate",
+        "gross_profit_yoy",
+        "margin_delta",
+    ]
+    if breakdown_column:
+        summary_columns.insert(1, breakdown_column)
+    summary_columns = [col for col in summary_columns if col in timeseries_df.columns]
+    summary_table = timeseries_df[summary_columns].copy()
+
+    rename_map = {
+        "period_label": "期間",
+        "sales_amount": "売上",
+        "gross_profit": "粗利",
+        "gross_margin": "粗利率",
+        "comparison_sales": "前年同期売上",
+        "comparison_gross_profit": "前年同期粗利",
+        "comparison_margin": "前年粗利率",
+        "yoy_rate": "売上前年比",
+        "gross_profit_yoy": "粗利前年比",
+        "margin_delta": "粗利率差",
+    }
+    if breakdown_column:
+        rename_map[breakdown_column] = breakdown_label.replace("別", "")
+    rename_map = {k: v for k, v in rename_map.items() if k in summary_table.columns}
+    summary_table = summary_table.rename(columns=rename_map)
+
+    format_map = {
+        "売上": "{:,.0f}",
+        "粗利": "{:,.0f}",
+        "粗利率": "{:.1%}",
+        "前年同期売上": "{:,.0f}",
+        "前年同期粗利": "{:,.0f}",
+        "前年粗利率": "{:.1%}",
+        "売上前年比": "{:+.1%}",
+        "粗利前年比": "{:+.1%}",
+        "粗利率差": "{:+.1%}",
+    }
+    summary_formatter = {
+        column: fmt for column, fmt in format_map.items() if column in summary_table.columns
+    }
+    summary_styler = summary_table.style.format(summary_formatter)
+    highlight_cols = [
+        column for column in ["売上前年比", "粗利前年比", "粗利率差"] if column in summary_table.columns
+    ]
+    if highlight_cols:
+        summary_styler = summary_styler.applymap(_highlight_growth, subset=highlight_cols)
+    st.dataframe(summary_styler, use_container_width=True)
+
+    drilldown_df = sales.drilldown_details(
+        filtered_sales, selection, granularity, breakdown_column
+    )
+    if not drilldown_df.empty:
+        st.subheader("ドリルダウン詳細")
+        detail_format = {
+            column: fmt
+            for column, fmt in {
+                "売上": "{:,.0f}",
+                "粗利": "{:,.0f}",
+                "粗利率": "{:.1%}",
+                "販売数量": "{:,.1f}",
+            }.items()
+            if column in drilldown_df.columns
+        }
+        st.dataframe(
+            drilldown_df.style.format(detail_format),
+            use_container_width=True,
+        )
+
+    breakdown_target = breakdown_column or "store"
+    summary_df = sales.breakdown_summary(
+        filtered_sales, comparison_sales, breakdown_target
+    )
+    if not summary_df.empty:
+        dimension_col = sales.resolve_breakdown_column(breakdown_target) or breakdown_target
+        summary_label = sales.breakdown_label(breakdown_target)
+        st.subheader(f"{summary_label}比較")
+        comparison_chart = go.Figure()
+        comparison_chart.add_bar(
+            x=summary_df[dimension_col],
+            y=summary_df["sales_amount"],
+            name="売上",
+        )
+        if summary_df["comparison_sales"].notna().any():
+            comparison_chart.add_bar(
+                x=summary_df[dimension_col],
+                y=summary_df["comparison_sales"],
+                name="前年同期売上",
+                opacity=0.7,
+            )
+        comparison_chart.add_trace(
             go.Scatter(
-                x=monthly_df["month_label"],
-                y=monthly_df["yoy_sales"],
-                name="前年同月売上",
+                x=summary_df[dimension_col],
+                y=summary_df["gross_margin"] * 100,
+                name="粗利率",
                 mode="lines+markers",
                 yaxis="y2",
             )
         )
-        fig.update_layout(
-            yaxis=dict(title="当期売上"),
+        if summary_df["comparison_margin"].notna().any():
+            comparison_chart.add_trace(
+                go.Scatter(
+                    x=summary_df[dimension_col],
+                    y=summary_df["comparison_margin"] * 100,
+                    name="前年粗利率",
+                    mode="lines+markers",
+                    line=dict(dash="dash"),
+                    yaxis="y2",
+                )
+            )
+        comparison_chart.update_layout(
+            hovermode="x unified",
+            barmode="group",
+            legend_title=summary_label,
+            yaxis=dict(title="売上"),
             yaxis2=dict(
-                title="前年同月売上",
+                title="粗利率(%)",
                 overlaying="y",
                 side="right",
-                showgrid=False,
+                ticksuffix="%",
             ),
         )
-    fig.update_layout(hovermode="x unified")
-    st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(comparison_chart, use_container_width=True)
 
-    st.subheader("カテゴリ別売上構成")
-    category_df = sales.sales_by_category(filtered_sales)
-    pie_chart = px.pie(
-        category_df,
-        names="category",
-        values="sales_amount",
-        color_discrete_sequence=px.colors.sequential.Blues,
-    )
-    st.plotly_chart(pie_chart, use_container_width=True)
-
-    st.dataframe(category_df, use_container_width=True)
+        dimension_label = summary_label.replace("別", "")
+        table_columns = [
+            dimension_col,
+            "sales_amount",
+            "gross_profit",
+            "gross_margin",
+            "comparison_sales",
+            "comparison_gross_profit",
+            "comparison_margin",
+            "yoy_rate",
+            "gross_profit_yoy",
+            "margin_delta",
+        ]
+        table_columns = [col for col in table_columns if col in summary_df.columns]
+        dimension_table = summary_df[table_columns].copy()
+        rename_map = {
+            dimension_col: dimension_label,
+            "sales_amount": "売上",
+            "gross_profit": "粗利",
+            "gross_margin": "粗利率",
+            "comparison_sales": "前年同期売上",
+            "comparison_gross_profit": "前年同期粗利",
+            "comparison_margin": "前年粗利率",
+            "yoy_rate": "売上前年比",
+            "gross_profit_yoy": "粗利前年比",
+            "margin_delta": "粗利率差",
+        }
+        rename_map = {k: v for k, v in rename_map.items() if k in dimension_table.columns}
+        dimension_table = dimension_table.rename(columns=rename_map)
+        dimension_formatter = {
+            column: fmt for column, fmt in format_map.items() if column in dimension_table.columns
+        }
+        dimension_styler = dimension_table.style.format(dimension_formatter)
+        highlight_cols = [
+            column for column in ["売上前年比", "粗利前年比", "粗利率差"] if column in dimension_table.columns
+        ]
+        if highlight_cols:
+            dimension_styler = dimension_styler.applymap(
+                _highlight_growth, subset=highlight_cols
+            )
+        st.dataframe(dimension_styler, use_container_width=True)
+    else:
+        st.info("選択した条件に該当する集計データがありません。")
 
 
 def render_products_tab(
@@ -562,12 +730,16 @@ def main() -> None:
     default_period = _default_period(active_datasets["sales"])
     stores = transformers.extract_stores(active_datasets["sales"])
     categories = transformers.extract_categories(active_datasets["sales"])
+    regions = transformers.extract_regions(active_datasets["sales"])
+    channels = transformers.extract_channels(active_datasets["sales"])
     provider_options = available_providers()
 
     sidebar_state = sidebar.render_sidebar(
         stores,
         categories,
         default_period=default_period,
+        regions=regions,
+        channels=channels,
         sample_files={k: str(v) for k, v in sample_files.items()},
         templates=templates,
         providers=provider_options,

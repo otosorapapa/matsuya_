@@ -1,23 +1,54 @@
 """Data transformation helpers shared across the Streamlit application."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
-from typing import List
+from typing import List, Sequence
 
 import pandas as pd
 
 
-@dataclass
-class FilterState:
-    store: str
-    start_date: date
-    end_date: date
-    category: str
-
-
 ALL_STORES = "全店舗"
 ALL_CATEGORIES = "全カテゴリ"
+ALL_REGIONS = "全地域"
+ALL_CHANNELS = "全チャネル"
+
+DEFAULT_REGION = "未設定"
+DEFAULT_CHANNEL = "店頭販売"
+
+STORE_DIMENSIONS = {
+    "本店": {"region": "関東", "channel": "直営"},
+    "福岡西店": {"region": "九州", "channel": "直営"},
+    "唐津店": {"region": "九州", "channel": "フランチャイズ"},
+}
+
+
+@dataclass
+class FilterState:
+    stores: Sequence[str]
+    start_date: date
+    end_date: date
+    categories: Sequence[str]
+    regions: Sequence[str] = field(default_factory=list)
+    channels: Sequence[str] = field(default_factory=list)
+    period_granularity: str = "daily"
+    breakdown_dimension: str = "store"
+
+    @property
+    def store(self) -> str:
+        """Return a representative store selection for legacy consumers."""
+
+        if not self.stores or len(self.stores) != 1:
+            return ALL_STORES
+        return self.stores[0]
+
+    @property
+    def category(self) -> str:
+        """Return a representative category selection for legacy consumers."""
+
+        if not self.categories or len(self.categories) != 1:
+            return ALL_CATEGORIES
+        return self.categories[0]
 
 
 NUMERIC_COLUMNS = [
@@ -39,6 +70,31 @@ def prepare_sales_dataset(df: pd.DataFrame) -> pd.DataFrame:
         lambda row: row["sales_amount"] / row["sales_qty"] if row["sales_qty"] else 0,
         axis=1,
     )
+
+    def _store_attribute(store: str, key: str, default: str) -> str:
+        attributes = STORE_DIMENSIONS.get(store, {})
+        return str(attributes.get(key, default))
+
+    if "region" not in dataset.columns:
+        dataset["region"] = dataset["store"].map(
+            lambda store: _store_attribute(store, "region", DEFAULT_REGION)
+        )
+    else:
+        dataset["region"] = dataset["region"].fillna(
+            dataset["store"].map(lambda store: _store_attribute(store, "region", DEFAULT_REGION))
+        )
+        dataset["region"] = dataset["region"].replace({"": DEFAULT_REGION}).astype(str)
+
+    if "channel" not in dataset.columns:
+        dataset["channel"] = dataset["store"].map(
+            lambda store: _store_attribute(store, "channel", DEFAULT_CHANNEL)
+        )
+    else:
+        dataset["channel"] = dataset["channel"].fillna(
+            dataset["store"].map(lambda store: _store_attribute(store, "channel", DEFAULT_CHANNEL))
+        )
+        dataset["channel"] = dataset["channel"].replace({"": DEFAULT_CHANNEL}).astype(str)
+
     dataset["year"] = dataset["date"].dt.year
     dataset["month"] = dataset["date"].dt.month
     dataset["year_month"] = dataset["date"].dt.to_period("M").dt.to_timestamp()
@@ -48,10 +104,14 @@ def prepare_sales_dataset(df: pd.DataFrame) -> pd.DataFrame:
 def apply_filters(df: pd.DataFrame, filters: FilterState) -> pd.DataFrame:
     """Filter dataset by store, period and category."""
     dataset = df.copy()
-    if filters.store != ALL_STORES:
-        dataset = dataset[dataset["store"] == filters.store]
-    if filters.category != ALL_CATEGORIES:
-        dataset = dataset[dataset["category"] == filters.category]
+    if filters.stores:
+        dataset = dataset[dataset["store"].isin(filters.stores)]
+    if filters.categories:
+        dataset = dataset[dataset["category"].isin(filters.categories)]
+    if filters.regions and "region" in dataset.columns:
+        dataset = dataset[dataset["region"].isin(filters.regions)]
+    if filters.channels and "channel" in dataset.columns:
+        dataset = dataset[dataset["channel"].isin(filters.channels)]
 
     mask = (dataset["date"] >= pd.Timestamp(filters.start_date)) & (
         dataset["date"] <= pd.Timestamp(filters.end_date)
@@ -61,13 +121,47 @@ def apply_filters(df: pd.DataFrame, filters: FilterState) -> pd.DataFrame:
 
 
 def extract_stores(df: pd.DataFrame) -> List[str]:
-    stores = sorted(df["store"].unique().tolist())
-    return [ALL_STORES, *stores]
+    if "store" not in df.columns:
+        return []
+    stores = (
+        df["store"].dropna().astype(str).unique().tolist()
+        if not df.empty
+        else []
+    )
+    return sorted(stores)
 
 
 def extract_categories(df: pd.DataFrame) -> List[str]:
-    categories = sorted(df["category"].unique().tolist())
-    return [ALL_CATEGORIES, *categories]
+    if "category" not in df.columns:
+        return []
+    categories = (
+        df["category"].dropna().astype(str).unique().tolist()
+        if not df.empty
+        else []
+    )
+    return sorted(categories)
+
+
+def extract_regions(df: pd.DataFrame) -> List[str]:
+    if "region" not in df.columns:
+        return []
+    regions = (
+        df["region"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist()
+        if not df.empty
+        else []
+    )
+    return sorted(regions)
+
+
+def extract_channels(df: pd.DataFrame) -> List[str]:
+    if "channel" not in df.columns:
+        return []
+    channels = (
+        df["channel"].dropna().astype(str).replace("", pd.NA).dropna().unique().tolist()
+        if not df.empty
+        else []
+    )
+    return sorted(channels)
 
 
 def compute_comparison_period(filters: FilterState) -> FilterState:
@@ -75,10 +169,14 @@ def compute_comparison_period(filters: FilterState) -> FilterState:
     start_prev = filters.start_date.replace(year=filters.start_date.year - 1)
     end_prev = filters.end_date.replace(year=filters.end_date.year - 1)
     return FilterState(
-        store=filters.store,
+        stores=list(filters.stores),
         start_date=start_prev,
         end_date=end_prev,
-        category=filters.category,
+        categories=list(filters.categories),
+        regions=list(filters.regions),
+        channels=list(filters.channels),
+        period_granularity=filters.period_granularity,
+        breakdown_dimension=filters.breakdown_dimension,
     )
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import streamlit as st
 
@@ -23,6 +23,20 @@ DATASET_LABELS = {
 }
 
 
+PERIOD_OPTIONS = {
+    "日次": "daily",
+    "週次": "weekly",
+    "月次": "monthly",
+    "年次": "yearly",
+}
+
+
+BREAKDOWN_OPTIONS = {
+    "店舗別": "store",
+    "カテゴリ別": "category",
+}
+
+
 def _resolve_date_range(value: Tuple[date, date]) -> Tuple[date, date]:
     if isinstance(value, tuple) and len(value) == 2:
         return value
@@ -32,11 +46,21 @@ def _resolve_date_range(value: Tuple[date, date]) -> Tuple[date, date]:
     return today.replace(month=max(1, today.month - 1), day=1), today
 
 
+def _ensure_selection(options: Sequence[str], selected: Sequence[str]) -> List[str]:
+    values = list(options)
+    chosen = list(selected)
+    if not values:
+        return []
+    return chosen or values
+
+
 def render_sidebar(
     stores: List[str],
     categories: List[str],
     *,
     default_period: Tuple[date, date],
+    regions: List[str],
+    channels: List[str],
     sample_files: Dict[str, str],
     templates: Dict[str, bytes],
     providers: List[str],
@@ -113,14 +137,49 @@ def render_sidebar(
             )
 
     st.sidebar.header("フィルタ")
-    store = st.sidebar.selectbox("店舗選択", stores)
+    store_selection = st.sidebar.multiselect(
+        "店舗選択",
+        stores,
+        default=stores,
+    )
     date_range_value = st.sidebar.date_input(
         "期間選択",
         value=default_period,
     )
     start_date, end_date = _resolve_date_range(date_range_value)
-    category = st.sidebar.selectbox("商品カテゴリ", categories)
+    category_selection = st.sidebar.multiselect(
+        "商品カテゴリ",
+        categories,
+        default=categories,
+    )
+    region_selection: List[str] = []
+    if regions:
+        region_selection = st.sidebar.multiselect(
+            "地域",
+            regions,
+            default=regions,
+        )
+    channel_selection: List[str] = []
+    if channels:
+        channel_selection = st.sidebar.multiselect(
+            "販売チャネル",
+            channels,
+            default=channels,
+        )
     comparison_label = st.sidebar.radio("比較モード", list(COMPARISON_OPTIONS.keys()))
+
+    st.sidebar.header("集計設定")
+    period_label = st.sidebar.radio(
+        "期間粒度",
+        list(PERIOD_OPTIONS.keys()),
+        index=2,
+        horizontal=True,
+    )
+    breakdown_label = st.sidebar.radio(
+        "表示単位",
+        list(BREAKDOWN_OPTIONS.keys()),
+        horizontal=True,
+    )
 
     st.sidebar.header("帳票出力")
     export_csv = st.sidebar.checkbox("CSV出力", value=True)
@@ -128,10 +187,14 @@ def render_sidebar(
     st.sidebar.markdown("---")
 
     filters = transformers.FilterState(
-        store=store,
+        stores=_ensure_selection(stores, store_selection),
         start_date=start_date,
         end_date=end_date,
-        category=category,
+        categories=_ensure_selection(categories, category_selection),
+        regions=_ensure_selection(regions, region_selection),
+        channels=_ensure_selection(channels, channel_selection),
+        period_granularity=PERIOD_OPTIONS[period_label],
+        breakdown_dimension=BREAKDOWN_OPTIONS[breakdown_label],
     )
     return {
         "uploads": {

@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
-from typing import IO, Callable, Dict, Iterable, Optional, Union
+from typing import IO, Callable, Dict, Iterable, List, Optional, Union
 
 import pandas as pd
 
@@ -158,7 +158,7 @@ def load_fixed_costs(source: Optional[CsvSource] = None) -> pd.DataFrame:
     return df
 
 
-def available_sample_files() -> dict[str, Path]:
+def available_sample_files() -> Dict[str, Path]:
     """Return paths to the built-in sample CSV files."""
     return {
         "sales": SAMPLE_DATA_DIR / "sales.csv",
@@ -250,7 +250,7 @@ def _validate_dataset(
 ) -> ValidationResult:
     df_raw = _coerce_to_dataframe(source, default_path=default_path)
     total_rows = len(df_raw)
-    errors: list[Dict[str, object]] = []
+    errors: List[Dict[str, object]] = []
 
     missing = set(required_columns) - set(df_raw.columns)
     if missing:

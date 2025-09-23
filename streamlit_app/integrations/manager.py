@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, datetime
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from .clients import DatasetBundle, PROVIDER_CLIENTS, get_client
 
@@ -25,7 +25,7 @@ class IntegrationResult:
         return f"{self.start_date:%Y-%m-%d} 〜 {self.end_date:%Y-%m-%d}"
 
 
-def available_providers() -> list[str]:
+def available_providers() -> List[str]:
     """Return the list of supported integration providers."""
 
     return list(PROVIDER_CLIENTS.keys())

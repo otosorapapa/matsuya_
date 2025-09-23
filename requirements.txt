@@ -1,0 +1,5 @@
+streamlit>=1.27
+pandas>=1.5
+plotly>=5.15
+numpy>=1.23
+reportlab>=3.6

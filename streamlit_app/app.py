@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import sys
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Callable, Dict, Optional, Tuple
 
 import pandas as pd
 import plotly.express as px
@@ -20,6 +21,9 @@ from streamlit_app import data_loader, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation
 from streamlit_app.components import import_dashboard, report, sidebar
 from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
+
+
+logger = logging.getLogger(__name__)
 
 
 st.set_page_config(page_title="松屋 計数管理ダッシュボード", layout="wide")
@@ -72,11 +76,75 @@ def _comparison_dataset(
     return df.head(0)
 
 
-CSV_VALIDATORS = {
-    "sales": data_loader.validate_sales_csv,
-    "inventory": data_loader.validate_inventory_csv,
-    "fixed_costs": data_loader.validate_fixed_costs_csv,
+_ERROR_COLUMNS = ["行番号", "列名", "内容"]
+
+_DATASET_CONFIGS: Dict[str, Tuple[str, Callable[[Optional[object]], pd.DataFrame], str]] = {
+    "sales": ("validate_sales_csv", data_loader.load_sales_data, "売上"),
+    "inventory": ("validate_inventory_csv", data_loader.load_inventory_data, "仕入/在庫"),
+    "fixed_costs": ("validate_fixed_costs_csv", data_loader.load_fixed_costs, "固定費"),
 }
+
+
+def _fallback_validator(
+    loader: Callable[[Optional[object]], pd.DataFrame],
+    dataset_label: str,
+) -> Callable[[Optional[object]], data_loader.ValidationResult]:
+    """Return a basic validator when dedicated helpers are unavailable."""
+
+    def _validator(source: Optional[object]) -> data_loader.ValidationResult:
+        try:
+            dataframe = loader(source)
+        except Exception as exc:  # pragma: no cover - defensive path
+            logger.exception("%s CSV validation failed with fallback", dataset_label)
+            try:
+                empty_df = loader(None).head(0)
+            except Exception:  # pragma: no cover - defensive path
+                empty_df = pd.DataFrame()
+            errors = pd.DataFrame(
+                [
+                    {
+                        "行番号": "全体",
+                        "列名": "-",
+                        "内容": f"{dataset_label}のCSV読込でエラーが発生しました: {exc}",
+                    }
+                ],
+                columns=_ERROR_COLUMNS,
+            )
+            return data_loader.ValidationResult(
+                dataframe=empty_df,
+                errors=errors,
+                valid=False,
+                total_rows=0,
+                dropped_rows=0,
+            )
+
+        return data_loader.ValidationResult(
+            dataframe=dataframe,
+            errors=pd.DataFrame(columns=_ERROR_COLUMNS),
+            valid=True,
+            total_rows=len(dataframe),
+            dropped_rows=0,
+        )
+
+    return _validator
+
+
+def _build_csv_validators() -> Dict[str, Callable[[Optional[object]], data_loader.ValidationResult]]:
+    validators: Dict[str, Callable[[Optional[object]], data_loader.ValidationResult]] = {}
+    for dataset, (validator_name, loader, label) in _DATASET_CONFIGS.items():
+        validator = getattr(data_loader, validator_name, None)
+        if validator is None:
+            logger.warning(
+                "data_loader.%s is missing; using fallback validator for '%s' dataset",
+                validator_name,
+                dataset,
+            )
+            validator = _fallback_validator(loader, label)
+        validators[dataset] = validator
+    return validators
+
+
+CSV_VALIDATORS = _build_csv_validators()
 
 
 def _copy_datasets(datasets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:

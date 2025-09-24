@@ -289,6 +289,81 @@ TARGET_MARGIN_RATE = 0.12
 TARGET_CASH_RATIO = 0.25
 BASE_CASH_BUFFER = 3_000_000.0
 KPI_ALERT_THRESHOLD = -0.05
+DEFAULT_ACCENT_COLOR = "#1E88E5"
+
+COST_COLUMN_LABELS = {
+    "rent": "家賃",
+    "payroll": "人件費",
+    "utilities": "光熱費",
+    "marketing": "販促費",
+    "other_fixed": "その他固定費",
+}
+_COST_COLOR_FACTORS = [-0.25, -0.1, 0.0, 0.2, 0.4]
+
+
+def _sanitize_hex_color(value: Optional[str], fallback: str = DEFAULT_ACCENT_COLOR) -> str:
+    """Return a normalized 6-digit hex color string."""
+
+    if not value or not isinstance(value, str):
+        return fallback
+    color = value.strip()
+    if not color:
+        return fallback
+    if not color.startswith("#"):
+        color = f"#{color}"
+    hex_part = color.lstrip("#")
+    if len(hex_part) == 3:
+        hex_part = "".join(ch * 2 for ch in hex_part)
+    if len(hex_part) != 6:
+        return fallback
+    try:
+        int(hex_part, 16)
+    except ValueError:
+        return fallback
+    return f"#{hex_part.upper()}"
+
+
+def _adjust_hex_color(hex_color: str, factor: float) -> str:
+    """Lighten or darken ``hex_color`` by ``factor`` (-1.0〜1.0)."""
+
+    base = _sanitize_hex_color(hex_color)
+    r = int(base[1:3], 16)
+    g = int(base[3:5], 16)
+    b = int(base[5:7], 16)
+    if factor >= 0:
+        ratio = min(factor, 1.0)
+        target_rgb = (255, 255, 255)
+    else:
+        ratio = min(-factor, 1.0)
+        target_rgb = (0, 0, 0)
+    nr = int(round(r + (target_rgb[0] - r) * ratio))
+    ng = int(round(g + (target_rgb[1] - g) * ratio))
+    nb = int(round(b + (target_rgb[2] - b) * ratio))
+    return f"#{nr:02X}{ng:02X}{nb:02X}"
+
+
+def _cost_color_mapping(cost_columns: Sequence[str]) -> Tuple[Dict[str, str], str]:
+    """Return a mapping of cost columns to theme accent-based colors."""
+
+    theme = st.get_option("theme") or {}
+    accent = _sanitize_hex_color(theme.get("accentColor"), DEFAULT_ACCENT_COLOR)
+    palette = [_adjust_hex_color(accent, factor) for factor in _COST_COLOR_FACTORS]
+    mapping = {col: palette[idx % len(palette)] for idx, col in enumerate(cost_columns)}
+    return mapping, accent
+
+
+def _resolve_target_fixed_cost() -> Optional[float]:
+    """Return a user defined fixed cost target when available."""
+
+    for key in ("target_fixed_cost", "simulation_fixed_cost"):
+        raw_value = st.session_state.get(key)
+        if raw_value is None:
+            continue
+        try:
+            return float(raw_value)
+        except (TypeError, ValueError):
+            continue
+    return None
 
 
 MESSAGE_DICTIONARY = {
@@ -1580,7 +1655,8 @@ def render_profitability_tab(
 
     with breakdown_col:
         st.subheader("固定費内訳")
-        if "store" in edited_df.columns:
+        has_store_column = "store" in edited_df.columns
+        if has_store_column:
             if store_choice == transformers.ALL_STORES:
                 breakdown_series = edited_df[cost_columns].sum()
             else:
@@ -1590,15 +1666,87 @@ def render_profitability_tab(
         else:
             breakdown_series = edited_df[cost_columns].sum()
 
-        breakdown_df = breakdown_series.reset_index(name="金額").rename(
-            columns={"index": "項目"}
+        breakdown_series = breakdown_series.reindex(cost_columns).fillna(0)
+        breakdown_df = (
+            breakdown_series.reset_index(name="金額").rename(columns={"index": "項目"})
         )
-        cost_chart = px.pie(
-            breakdown_df,
-            names="項目",
-            values="金額",
-            hole=0.4,
+        breakdown_df["項目"] = breakdown_df["項目"].map(
+            lambda key: COST_COLUMN_LABELS.get(key, key)
         )
+
+        color_map, accent_color = _cost_color_mapping(cost_columns)
+        cost_chart = go.Figure()
+        if has_store_column and store_choice == transformers.ALL_STORES:
+            chart_source = (
+                edited_df.groupby("store")[cost_columns]
+                .sum()
+                .reindex(columns=cost_columns, fill_value=0)
+                .reset_index()
+            )
+            x_values = chart_source["store"].astype(str).tolist()
+            for column in cost_columns:
+                if column not in chart_source:
+                    continue
+                cost_chart.add_trace(
+                    go.Bar(
+                        x=x_values,
+                        y=chart_source[column].astype(float).tolist(),
+                        name=COST_COLUMN_LABELS.get(column, column),
+                        marker_color=color_map[column],
+                        hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
+                    )
+                )
+        else:
+            if has_store_column and store_choice != transformers.ALL_STORES:
+                store_df = edited_df[edited_df["store"] == store_choice]
+            else:
+                store_df = edited_df
+            aggregated_costs = (
+                store_df[cost_columns].fillna(0).sum().reindex(cost_columns, fill_value=0)
+            )
+            stack_label = (
+                store_choice if store_choice != transformers.ALL_STORES else "全店舗"
+            )
+            if not has_store_column and store_choice == transformers.ALL_STORES:
+                stack_label = "全体"
+            stack_label = str(stack_label)
+            for column in cost_columns:
+                cost_chart.add_trace(
+                    go.Bar(
+                        x=[stack_label],
+                        y=[float(aggregated_costs.get(column, 0.0))],
+                        name=COST_COLUMN_LABELS.get(column, column),
+                        marker_color=color_map[column],
+                        hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
+                    )
+                )
+
+        xaxis_title = (
+            "店舗" if has_store_column and store_choice == transformers.ALL_STORES else "固定費内訳"
+        )
+        cost_chart.update_layout(
+            barmode="stack",
+            xaxis=dict(title=xaxis_title),
+            yaxis=dict(title="金額（円）"),
+            legend=dict(title=dict(text="費目")),
+            hovermode="x unified",
+        )
+
+        target_fixed_cost = _resolve_target_fixed_cost()
+        if target_fixed_cost is not None:
+            line_color = _adjust_hex_color(accent_color, -0.35)
+            cost_chart.add_hline(
+                y=target_fixed_cost,
+                line_dash="dash",
+                line_color=line_color,
+                annotation_text=f"目標固定費：{target_fixed_cost:,.0f} 円",
+                annotation_position="top left",
+                annotation=dict(
+                    font=dict(color=line_color),
+                    bgcolor="rgba(255, 255, 255, 0.8)",
+                ),
+            )
+
         st.plotly_chart(cost_chart, use_container_width=True)
         st.dataframe(breakdown_df, use_container_width=True)
 

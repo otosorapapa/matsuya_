@@ -1320,25 +1320,97 @@ def render_products_tab(
 
     st.subheader("ABC分析とAランク動向")
     pareto_df = products.pareto_chart_data(abc_df)
+    pareto_df = pareto_df.copy()
+    pareto_df["cumulative_pct"] = pareto_df["cumulative_share"] * 100
+
+    rank_series = (
+        pareto_df["rank"]
+        if "rank" in pareto_df.columns
+        else pd.Series([None] * len(pareto_df), index=pareto_df.index)
+    )
+    rank_series = rank_series.fillna("-")
+    rank_list = rank_series.tolist()
+    rank_colors = {"A": "#EF553B", "B": "#FFA15A", "C": "#636EFA"}
+    marker_colors = [
+        rank_colors.get(rank, "#B0BEC5") if isinstance(rank, str) else "#B0BEC5"
+        for rank in rank_list
+    ]
+    bar_customdata = list(zip(pareto_df["cumulative_pct"], rank_list))
+
     pareto_chart = go.Figure()
     pareto_chart.add_bar(
         x=pareto_df["product"],
         y=pareto_df["sales_amount"],
         name="売上",
+        marker_color=marker_colors,
+        customdata=bar_customdata,
+        hovertemplate=(
+            "<b>%{x}</b><br>売上: %{y:,.0f} 円"
+            "<br>累積構成比: %{customdata[0]:.1f}%"
+            "<br>ランク: %{customdata[1]}<extra></extra>"
+        ),
     )
+
     pareto_chart.add_trace(
         go.Scatter(
             x=pareto_df["product"],
-            y=pareto_df["cumulative_share"] * 100,
+            y=pareto_df["cumulative_pct"],
             mode="lines+markers",
-            name="累積構成比 (%)",
+            name="累積構成比（％）",
+            yaxis="y2",
+            customdata=rank_list,
+            hovertemplate=(
+                "<b>%{x}</b><br>累積構成比: %{y:.1f}%"
+                "<br>ランク: %{customdata}<extra></extra>"
+            ),
+        )
+    )
+
+    boundary_color = "#9467BD"
+    cumulative_pct = pareto_df["cumulative_pct"]
+    boundary_product = (
+        pareto_df.loc[cumulative_pct >= 80, "product"].iloc[0]
+        if (cumulative_pct >= 80).any()
+        else pareto_df["product"].iloc[-1]
+    )
+    pareto_chart.add_shape(
+        type="line",
+        xref="x",
+        yref="paper",
+        x0=boundary_product,
+        x1=boundary_product,
+        y0=0,
+        y1=1,
+        line=dict(color=boundary_color, dash="dash"),
+    )
+    pareto_chart.add_annotation(
+        x=boundary_product,
+        y=1,
+        yref="paper",
+        text="Aランク境界",
+        showarrow=False,
+        yanchor="bottom",
+        font=dict(color=boundary_color),
+        bgcolor="rgba(255, 255, 255, 0.8)",
+    )
+    pareto_chart.add_trace(
+        go.Scatter(
+            x=[boundary_product, boundary_product],
+            y=[0, 100],
+            mode="lines",
+            line=dict(color=boundary_color, dash="dash"),
+            name="Aランク境界",
+            hoverinfo="skip",
+            showlegend=True,
+            visible="legendonly",
             yaxis="y2",
         )
     )
+
     pareto_chart.update_layout(
         yaxis=dict(title="売上"),
         yaxis2=dict(
-            title="累積構成比(%)",
+            title="累積構成比（％）",
             overlaying="y",
             side="right",
         ),

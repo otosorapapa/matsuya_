@@ -67,4 +67,6 @@ def pareto_chart_data(abc_df: pd.DataFrame) -> pd.DataFrame:
     """Prepare data for a Pareto chart."""
     if abc_df.empty:
         return abc_df
-    return abc_df[["product", "sales_amount", "cumulative_share"]]
+    columns = ["product", "sales_amount", "cumulative_share", "rank"]
+    available = [column for column in columns if column in abc_df.columns]
+    return abc_df[available]

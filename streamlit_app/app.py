@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import pandas as pd
 from pandas.tseries.offsets import MonthEnd
@@ -159,6 +159,98 @@ def _copy_datasets(datasets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]
 
 def _hash_bytes(payload: bytes) -> str:
     return hashlib.md5(payload).hexdigest()
+
+
+def _custom_data_to_list(value: object) -> List[object]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if hasattr(value, "tolist"):
+        converted = value.tolist()
+        if isinstance(converted, list):
+            return converted
+        if isinstance(converted, tuple):
+            return list(converted)
+        return [converted]
+    return [value]
+
+
+def _normalize_plotly_selections(
+    events: Sequence[Dict[str, object]],
+    figure: go.Figure,
+) -> List[Dict[str, object]]:
+    normalized: List[Dict[str, object]] = []
+    if not events:
+        return normalized
+
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+
+        curve_number = event.get("curveNumber")
+        point_indices = event.get("pointIndices")
+
+        def _resolve_customdata(
+            index: Optional[int],
+            fallback: Optional[object],
+        ) -> Optional[List[object]]:
+            customdata = fallback
+            if customdata is None and curve_number is not None:
+                try:
+                    trace = figure.data[curve_number]
+                except (IndexError, TypeError):
+                    trace = None
+                else:
+                    trace_custom = getattr(trace, "customdata", None)
+                    if (
+                        trace_custom is not None
+                        and index is not None
+                        and hasattr(trace_custom, "__len__")
+                        and index < len(trace_custom)
+                    ):
+                        try:
+                            customdata = trace_custom[index]
+                        except Exception:  # pragma: no cover - defensive
+                            customdata = None
+            values = _custom_data_to_list(customdata)
+            return values or None
+
+        if isinstance(point_indices, list) and point_indices:
+            for idx in point_indices:
+                custom_values = _resolve_customdata(idx, None)
+                if custom_values is None:
+                    continue
+                normalized.append(
+                    {
+                        "curve_number": curve_number,
+                        "point_index": idx,
+                        "point_number": None,
+                        "point_indices": point_indices,
+                        "customdata": custom_values,
+                    }
+                )
+            continue
+
+        point_index = event.get("pointIndex")
+        if point_index is None:
+            point_index = event.get("pointNumber")
+        custom_values = _resolve_customdata(point_index, event.get("customdata"))
+        if custom_values is None:
+            continue
+        normalized.append(
+            {
+                "curve_number": curve_number,
+                "point_index": point_index,
+                "point_number": event.get("pointNumber"),
+                "point_indices": point_indices if isinstance(point_indices, list) else None,
+                "customdata": custom_values,
+            }
+        )
+
+    return normalized
 
 
 def _handle_csv_uploads(
@@ -995,6 +1087,11 @@ def render_sales_tab(
         },
     )
 
+    selection_state = state.setdefault(
+        "chart_selections",
+        {"timeseries": [], "breakdown": [], "composition": []},
+    )
+
     channel_options = (
         [transformers.ALL_CHANNELS, *channels]
         if channels
@@ -1054,6 +1151,10 @@ def render_sales_tab(
         horizontal=True,
     )
 
+    previous_channel = state.get("channel", transformers.ALL_CHANNELS)
+    previous_granularity = state.get("granularity", "monthly")
+    previous_breakdown = state.get("breakdown", "store")
+
     state.update(
         {
             "channel": channel_choice,
@@ -1077,6 +1178,14 @@ def render_sales_tab(
         period_granularity=state["granularity"],
         breakdown_dimension=state["breakdown"],
     )
+
+    if (
+        previous_channel != state["channel"]
+        or previous_granularity != state["granularity"]
+        or previous_breakdown != state["breakdown"]
+    ):
+        for key in list(selection_state.keys()):
+            selection_state[key] = []
 
     filtered_sales = transformers.apply_filters(sales_df, view_filters)
     comparison_sales = _comparison_dataset(
@@ -1150,6 +1259,9 @@ def render_sales_tab(
         view_filters.period_granularity,
         breakdown_column,
     )
+    custom_columns = ["period_key", "period_label"]
+    if breakdown_column:
+        custom_columns.append(breakdown_column)
     timeseries_chart = px.line(
         timeseries_df,
         x="period_label",
@@ -1157,6 +1269,7 @@ def render_sales_tab(
         color=breakdown_column if breakdown_column else None,
         markers=True,
         labels={"period_label": "期間", "sales_amount": "売上"},
+        custom_data=custom_columns,
     )
     if timeseries_df["comparison_sales"].notna().any():
         timeseries_chart.add_trace(
@@ -1168,10 +1281,69 @@ def render_sales_tab(
                 line=dict(dash="dash"),
             )
         )
-    st.subheader(f"売上推移（{breakdown_label}）")
-    st.plotly_chart(timeseries_chart, use_container_width=True)
+    header_col, reset_col = st.columns([5, 1])
+    with header_col:
+        st.subheader(f"売上推移（{breakdown_label}）")
+    with reset_col:
+        if st.button("選択解除", key="sales-timeseries-clear"):
+            selection_state["timeseries"] = []
+    timeseries_events = plotly_events(
+        timeseries_chart,
+        click_event=True,
+        select_event=True,
+        key="sales-timeseries-events",
+    )
+    normalized_timeseries = _normalize_plotly_selections(
+        timeseries_events, timeseries_chart
+    )
+    if normalized_timeseries:
+        selection_state["timeseries"] = normalized_timeseries
 
-    st.subheader("チャネル別構成比")
+    breakdown_summary_df = sales.breakdown_summary(
+        filtered_sales,
+        comparison_sales,
+        view_filters.breakdown_dimension,
+    )
+    if (
+        breakdown_column
+        and not breakdown_summary_df.empty
+        and breakdown_column in breakdown_summary_df.columns
+    ):
+        breakdown_header, breakdown_reset = st.columns([5, 1])
+        with breakdown_header:
+            st.subheader(f"{breakdown_label}別売上")
+        with breakdown_reset:
+            if st.button("選択解除", key="sales-breakdown-clear"):
+                selection_state["breakdown"] = []
+        breakdown_chart = px.bar(
+            breakdown_summary_df.sort_values("sales_amount", ascending=True),
+            x="sales_amount",
+            y=breakdown_column,
+            orientation="h",
+            labels={"sales_amount": "売上", breakdown_column: breakdown_label},
+            custom_data=[breakdown_column],
+        )
+        breakdown_chart.update_layout(yaxis=dict(autorange="reversed"))
+        breakdown_events = plotly_events(
+            breakdown_chart,
+            click_event=True,
+            select_event=True,
+            key="sales-breakdown-events",
+        )
+        normalized_breakdown = _normalize_plotly_selections(
+            breakdown_events, breakdown_chart
+        )
+        if normalized_breakdown:
+            selection_state["breakdown"] = normalized_breakdown
+    else:
+        selection_state["breakdown"] = []
+
+    channel_header, channel_reset = st.columns([5, 1])
+    with channel_header:
+        st.subheader("チャネル別構成比")
+    with channel_reset:
+        if st.button("選択解除", key="sales-channel-clear"):
+            selection_state["composition"] = []
     composition_df = (
         filtered_sales.groupby("channel")["sales_amount"].sum().reset_index()
     )
@@ -1184,8 +1356,19 @@ def render_sales_tab(
             names="channel",
             values="sales_amount",
             hole=0.35,
+            custom_data=["channel"],
         )
-        st.plotly_chart(pie, use_container_width=True)
+        composition_events = plotly_events(
+            pie,
+            click_event=True,
+            select_event=True,
+            key="sales-composition-events",
+        )
+        normalized_composition = _normalize_plotly_selections(
+            composition_events, pie
+        )
+        if normalized_composition:
+            selection_state["composition"] = normalized_composition
         st.dataframe(
             composition_df.rename(
                 columns={"channel": "チャネル", "sales_amount": "売上"}
@@ -1193,12 +1376,16 @@ def render_sales_tab(
             .assign(構成比=lambda df: df["構成比"].map(lambda v: f"{v*100:.1f}%")),
             use_container_width=True,
         )
+    else:
+        selection_state["composition"] = []
 
     st.subheader("売上明細")
-    details = filtered_sales[
-        [
+    detail_columns = [
+        column
+        for column in [
             "date",
             "store",
+            "region",
             "channel",
             "category",
             "product",
@@ -1207,29 +1394,130 @@ def render_sales_tab(
             "gross_profit",
             "gross_margin",
         ]
-    ].copy()
-    details = details.sort_values("date", ascending=False)
+        if column in filtered_sales.columns
+    ]
+    details = filtered_sales[detail_columns].copy()
+    if "date" in details.columns:
+        details = details.sort_values("date", ascending=False)
+
+    timeseries_selections = selection_state.get("timeseries", [])
+    breakdown_selections = selection_state.get("breakdown", [])
+    composition_selections = selection_state.get("composition", [])
+
+    period_ranges: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+    period_labels: Set[str] = set()
+    timeseries_segments: Set[Any] = set()
+    for item in timeseries_selections:
+        custom = item.get("customdata", [])
+        if not custom:
+            continue
+        period_key = str(custom[0])
+        label_value = custom[1] if len(custom) > 1 else period_key
+        period_labels.add(str(label_value))
+        start, end = sales.period_bounds(period_key, view_filters.period_granularity)
+        period_ranges.append((start, end))
+        if breakdown_column and len(custom) > 2:
+            timeseries_segments.add(custom[2])
+
+    breakdown_values: Set[Any] = set()
+    for item in breakdown_selections:
+        custom = item.get("customdata", [])
+        if not custom:
+            continue
+        breakdown_values.add(custom[0])
+
+    channel_values: Set[Any] = set()
+    for item in composition_selections:
+        custom = item.get("customdata", [])
+        if not custom:
+            continue
+        channel_values.add(custom[0])
+
+    filter_mask = pd.Series(True, index=details.index)
+    selection_applied = False
+
+    if period_ranges and "date" in details.columns:
+        period_mask = pd.Series(False, index=details.index)
+        for start, end in period_ranges:
+            period_mask |= (details["date"] >= start) & (details["date"] <= end)
+        filter_mask &= period_mask
+        selection_applied = True
+
+    segment_values = {
+        value
+        for value in list(timeseries_segments) + list(breakdown_values)
+        if value is not None and not pd.isna(value)
+    }
+    if segment_values and breakdown_column and breakdown_column in details.columns:
+        filter_mask &= details[breakdown_column].isin(segment_values)
+        selection_applied = True
+
+    valid_channel_values = {
+        value for value in channel_values if value is not None and not pd.isna(value)
+    }
+    if valid_channel_values and "channel" in details.columns:
+        filter_mask &= details["channel"].isin(valid_channel_values)
+        selection_applied = True
+
+    details_view = (
+        details.loc[filter_mask].copy() if selection_applied else details.copy()
+    )
+    if "date" in details_view.columns:
+        details_view = details_view.sort_values("date", ascending=False)
+
+    filter_descriptions: List[str] = []
+    if period_labels:
+        filter_descriptions.append("期間: " + ", ".join(sorted(period_labels)))
+    segment_labels = sorted(
+        {
+            str(value)
+            for value in segment_values
+            if value is not None and not pd.isna(value)
+        }
+    )
+    if segment_labels:
+        filter_descriptions.append(
+            f"{breakdown_label}: " + ", ".join(segment_labels)
+        )
+    channel_labels = sorted(
+        {
+            str(value)
+            for value in valid_channel_values
+            if value is not None and not pd.isna(value)
+        }
+    )
+    if channel_labels and (breakdown_column != "channel" or not segment_labels):
+        filter_descriptions.append("チャネル: " + ", ".join(channel_labels))
+
+    if filter_descriptions:
+        st.caption("絞り込み: " + " ／ ".join(filter_descriptions))
+
+    if selection_applied and details_view.empty:
+        st.warning("選択条件に該当する売上明細がありません。")
+
+    format_map = {
+        "sales_amount": "{:,.0f}",
+        "sales_qty": "{:,.1f}",
+        "gross_profit": "{:,.0f}",
+        "gross_margin": "{:.1%}",
+    }
+    available_formats = {
+        column: fmt for column, fmt in format_map.items() if column in details_view.columns
+    }
     st.dataframe(
-        details.style.format(
-            {
-                "sales_amount": "{:,.0f}",
-                "sales_qty": "{:,.1f}",
-                "gross_profit": "{:,.0f}",
-                "gross_margin": "{:.1%}",
-            }
-        ),
+        details_view.style.format(available_formats),
         use_container_width=True,
     )
 
     report.csv_download(
         "売上データをCSV出力",
-        details,
+        details_view,
         file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}_{filters.end_date:%Y%m%d}.csv",
     )
     report.pdf_download(
         "売上データをPDF出力",
         "売上サマリー",
-        details,
+        details_view,
         file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}.pdf",
     )
 

@@ -64,6 +64,7 @@ def render_sidebar(
     sample_files: Dict[str, str],
     templates: Dict[str, bytes],
     providers: List[str],
+    show_filters: bool = True,
 ) -> Dict[str, object]:
     st.sidebar.header("データソース")
     mode_label = st.sidebar.radio("連携方法", ["CSVアップロード", "API連携"])
@@ -136,55 +137,66 @@ def render_sidebar(
                 key=f"template-{key}",
             )
 
-    st.sidebar.header("フィルタ")
-    store_selection = st.sidebar.multiselect(
-        "店舗選択",
-        stores,
-        default=stores,
-    )
-    date_range_value = st.sidebar.date_input(
-        "期間選択",
-        value=default_period,
-    )
-    start_date, end_date = _resolve_date_range(date_range_value)
-    category_selection = st.sidebar.multiselect(
-        "商品カテゴリ",
-        categories,
-        default=categories,
-    )
-    region_selection: List[str] = []
-    if regions:
-        region_selection = st.sidebar.multiselect(
-            "地域",
-            regions,
-            default=regions,
-        )
-    channel_selection: List[str] = []
-    if channels:
-        channel_selection = st.sidebar.multiselect(
-            "販売チャネル",
-            channels,
-            default=channels,
-        )
-    comparison_label = st.sidebar.radio("比較モード", list(COMPARISON_OPTIONS.keys()))
+    export_csv = export_pdf = False
+    comparison_label = list(COMPARISON_OPTIONS.keys())[0]
+    period_label = list(PERIOD_OPTIONS.keys())[2]
+    breakdown_label = list(BREAKDOWN_OPTIONS.keys())[0]
+    store_selection = list(stores)
+    category_selection = list(categories)
+    region_selection: List[str] = list(regions)
+    channel_selection: List[str] = list(channels)
+    start_date, end_date = default_period
 
-    st.sidebar.header("集計設定")
-    period_label = st.sidebar.radio(
-        "期間粒度",
-        list(PERIOD_OPTIONS.keys()),
-        index=2,
-        horizontal=True,
-    )
-    breakdown_label = st.sidebar.radio(
-        "表示単位",
-        list(BREAKDOWN_OPTIONS.keys()),
-        horizontal=True,
-    )
+    if show_filters:
+        st.sidebar.header("フィルタ")
+        store_selection = st.sidebar.multiselect(
+            "店舗選択",
+            stores,
+            default=stores,
+        )
+        date_range_value = st.sidebar.date_input(
+            "期間選択",
+            value=default_period,
+        )
+        start_date, end_date = _resolve_date_range(date_range_value)
+        category_selection = st.sidebar.multiselect(
+            "商品カテゴリ",
+            categories,
+            default=categories,
+        )
+        region_selection = []
+        if regions:
+            region_selection = st.sidebar.multiselect(
+                "地域",
+                regions,
+                default=regions,
+            )
+        channel_selection = []
+        if channels:
+            channel_selection = st.sidebar.multiselect(
+                "販売チャネル",
+                channels,
+                default=channels,
+            )
+        comparison_label = st.sidebar.radio("比較モード", list(COMPARISON_OPTIONS.keys()))
 
-    st.sidebar.header("帳票出力")
-    export_csv = st.sidebar.checkbox("CSV出力", value=True)
-    export_pdf = st.sidebar.checkbox("PDF出力")
-    st.sidebar.markdown("---")
+        st.sidebar.header("集計設定")
+        period_label = st.sidebar.radio(
+            "期間粒度",
+            list(PERIOD_OPTIONS.keys()),
+            index=2,
+            horizontal=True,
+        )
+        breakdown_label = st.sidebar.radio(
+            "表示単位",
+            list(BREAKDOWN_OPTIONS.keys()),
+            horizontal=True,
+        )
+
+        st.sidebar.header("帳票出力")
+        export_csv = st.sidebar.checkbox("CSV出力", value=True)
+        export_pdf = st.sidebar.checkbox("PDF出力")
+        st.sidebar.markdown("---")
 
     filters = transformers.FilterState(
         stores=_ensure_selection(stores, store_selection),

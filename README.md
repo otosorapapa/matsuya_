@@ -3,6 +3,7 @@
 本リポジトリでは、株式会社松屋向けに構想したStreamlitベースの「計数管理」Webアプリの設計書およびプロトタイプ実装を管理しています。詳細なUI/UX、データ構造、実装モジュール案は下記ドキュメントを参照してください。
 
 - [松屋向け「計数管理」Streamlitアプリ設計書](docs/streamlit_design.md)
+- [Phase 2 情報設計・導線再設計ガイド](docs/phase2_information_architecture.md)
 
 ## Streamlitアプリ概要
 

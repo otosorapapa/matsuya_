@@ -273,23 +273,15 @@ def _log_integration_result(result: IntegrationResult) -> None:
 
 
 GLOBAL_FILTER_KEY = "global_filters"
-NAV_STATE_KEY = "active_main_tab"
-DEFAULT_NAV_KEY = "dashboard"
 GLOBAL_FILTER_PRESETS = ["今月", "先月", "直近30日", "カスタム"]
-MAIN_TAB_CONFIG = [
-    ("dashboard", "ダッシュボード"),
-    ("sales", "売上分析"),
-    ("profit", "利益"),
-    ("product", "商品分析"),
-    ("inventory", "在庫"),
-    ("simulation", "経営シミュレーション"),
-    ("data", "データ管理"),
-]
 TARGET_MARGIN_RATE = 0.12
 TARGET_CASH_RATIO = 0.25
 BASE_CASH_BUFFER = 3_000_000.0
 KPI_ALERT_THRESHOLD = -0.05
+DEFAULT_PRIMARY_COLOR = "#2563EB"
 DEFAULT_ACCENT_COLOR = "#1E88E5"
+DEFAULT_SUCCESS_COLOR = "#16A34A"
+DEFAULT_ERROR_COLOR = "#DC2626"
 
 COST_COLUMN_LABELS = {
     "rent": "家賃",
@@ -350,6 +342,26 @@ def _cost_color_mapping(cost_columns: Sequence[str]) -> Tuple[Dict[str, str], st
     palette = [_adjust_hex_color(accent, factor) for factor in _COST_COLOR_FACTORS]
     mapping = {col: palette[idx % len(palette)] for idx, col in enumerate(cost_columns)}
     return mapping, accent
+
+
+def _resolve_theme_colors() -> Dict[str, str]:
+    """Fetch commonly used theme colors with sensible fallbacks."""
+
+    theme = st.get_option("theme") or {}
+    primary = _sanitize_hex_color(theme.get("primaryColor"), DEFAULT_PRIMARY_COLOR)
+    accent = _sanitize_hex_color(theme.get("accentColor"), DEFAULT_ACCENT_COLOR)
+    success = _sanitize_hex_color(theme.get("successColor"), DEFAULT_SUCCESS_COLOR)
+    error = _sanitize_hex_color(theme.get("errorColor"), DEFAULT_ERROR_COLOR)
+    neutral = _sanitize_hex_color(theme.get("secondaryBackgroundColor"), "#F1F5F9")
+    text = _sanitize_hex_color(theme.get("textColor"), "#0F172A")
+    return {
+        "primary": primary,
+        "accent": accent,
+        "success": success,
+        "error": error,
+        "neutral": neutral,
+        "text": text,
+    }
 
 
 def _resolve_target_fixed_cost() -> Optional[float]:
@@ -476,8 +488,9 @@ def render_guided_message(
 def _inject_global_styles() -> None:
     """Inject shared CSS for the redesigned dashboard."""
 
+    colors = _resolve_theme_colors()
     st.markdown(
-        """
+        f"""
         <style>
         .kpi-card {
             background: #ffffff;
@@ -487,12 +500,12 @@ def _inject_global_styles() -> None:
             margin-bottom: 0.8rem;
             }
         .kpi-card.alert {
-            background: #fef2f2;
-            border: 1px solid #fca5a5;
+            background: { _adjust_hex_color(colors['error'], 0.75) };
+            border: 1px solid { _adjust_hex_color(colors['error'], 0.4) };
         }
         .kpi-card.caution {
-            background: #fff7ed;
-            border: 1px solid #fdba74;
+            background: { _adjust_hex_color(colors['primary'], 0.85) };
+            border: 1px solid { _adjust_hex_color(colors['primary'], 0.55) };
         }
         .kpi-card .label {
             font-size: 0.9rem;
@@ -502,7 +515,7 @@ def _inject_global_styles() -> None:
         .kpi-card .value {
             font-size: 1.6rem;
             font-weight: 600;
-            color: #111827;
+            color: {colors['text']};
         }
         .kpi-card .delta {
             font-size: 0.9rem;
@@ -510,10 +523,10 @@ def _inject_global_styles() -> None:
             margin-top: 0.2rem;
         }
         .kpi-card .delta.positive {
-            color: #148a4a;
+            color: {colors['success']};
         }
         .kpi-card .delta.negative {
-            color: #d93025;
+            color: {colors['error']};
         }
         .kpi-card .target {
             font-size: 0.85rem;
@@ -521,14 +534,14 @@ def _inject_global_styles() -> None:
             color: #4b5563;
         }
         .kpi-card .target.positive {
-            color: #148a4a;
+            color: {colors['success']};
         }
         .kpi-card .target.negative {
-            color: #d93025;
+            color: {colors['error']};
         }
         .alert-box {
-            background: #fef3f2;
-            border: 1px solid #fda29b;
+            background: { _adjust_hex_color(colors['error'], 0.75) };
+            border: 1px solid { _adjust_hex_color(colors['error'], 0.4) };
             border-radius: 12px;
             padding: 1rem 1.2rem;
             display: flex;
@@ -538,13 +551,13 @@ def _inject_global_styles() -> None:
             gap: 1rem;
         }
         .alert-box.success {
-            background: #ecfdf3;
-            border-color: #a6f4c5;
-            color: #027a48;
+            background: { _adjust_hex_color(colors['success'], 0.75) };
+            border-color: { _adjust_hex_color(colors['success'], 0.4) };
+            color: {colors['success']};
         }
         .filter-bar {
-            background: #f8fafc;
-            border: 1px solid #e2e8f0;
+            background: {colors['neutral']};
+            border: 1px solid { _adjust_hex_color(colors['neutral'], -0.15) };
             border-radius: 12px;
             padding: 0.9rem 1.1rem;
             margin-bottom: 1rem;
@@ -747,7 +760,7 @@ def render_global_filter_bar(
         },
     )
 
-    st.markdown("#### 基本フィルタ")
+    st.markdown("### 共通コントロール")
     with st.container():
         col1, col2 = st.columns([2, 1])
         preset_index = (
@@ -810,6 +823,7 @@ def render_global_filter_bar(
     st.caption(
         f"期間: {start_date:%Y-%m-%d} 〜 {end_date:%Y-%m-%d} ／ 店舗: {store_choice}"
     )
+    st.caption("※ 選択した条件はすべてのタブに適用されます。")
     return filters
 
 
@@ -820,8 +834,6 @@ def render_dashboard_tab(
     filters: transformers.FilterState,
     fixed_costs_df: pd.DataFrame,
     inventory_df: pd.DataFrame,
-    *,
-    navigate: Optional[Callable[[str], None]] = None,
 ) -> pd.DataFrame:
     st.markdown("### 経営ダッシュボード")
 
@@ -864,37 +876,6 @@ def render_dashboard_tab(
     cash_previous = _cash_flow_summary(comparison_sales, filtered_inventory)
     cash_target = sales_target * TARGET_CASH_RATIO
 
-    sales_action = (
-        {
-            "label": "売上分析を開く",
-            "on_click": navigate,
-            "args": ("sales",),
-            "key": "dashboard-kpi-sales",
-        }
-        if navigate
-        else {}
-    )
-    profit_action = (
-        {
-            "label": "損益詳細を開く",
-            "on_click": navigate,
-            "args": ("profit",),
-            "key": "dashboard-kpi-profit",
-        }
-        if navigate
-        else {}
-    )
-    cash_action = (
-        {
-            "label": "シミュレーションへ",
-            "on_click": navigate,
-            "args": ("simulation",),
-            "key": "dashboard-kpi-cash",
-        }
-        if navigate
-        else {}
-    )
-
     _render_kpi_cards(
         [
             {
@@ -903,7 +884,6 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(total_sales, previous_sales),
                 "target_diff": total_sales - sales_target,
-                "action": sales_action,
             },
             {
                 "label": "営業利益",
@@ -911,7 +891,6 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(operating_profit, previous_operating_profit),
                 "target_diff": operating_profit - profit_target,
-                "action": profit_action,
             },
             {
                 "label": "資金残高",
@@ -921,80 +900,9 @@ def render_dashboard_tab(
                     cash_current["balance"], cash_previous.get("balance")
                 ),
                 "target_diff": cash_current["balance"] - cash_target,
-                "action": cash_action,
             },
         ]
     )
-
-    granularity = "weekly"
-    sales_trend = sales.timeseries_with_comparison(
-        sales_df, comparison_sales, granularity
-    )
-    sales_chart = px.line(
-        sales_trend,
-        x="period_label",
-        y="sales_amount",
-        labels={"period_label": "期間", "sales_amount": "売上"},
-        markers=True,
-    )
-    if sales_trend["comparison_sales"].notna().any():
-        sales_chart.add_trace(
-            go.Scatter(
-                x=sales_trend["period_label"],
-                y=sales_trend["comparison_sales"],
-                mode="lines+markers",
-                name="前期比",
-                line=dict(dash="dash"),
-            )
-        )
-
-    profit_trend = sales.aggregate_timeseries(sales_df, granularity)
-    cost_columns = ["rent", "payroll", "utilities", "marketing", "other_fixed"]
-    total_fixed_cost = 0.0
-    if not filtered_costs.empty:
-        total_fixed_cost = float(
-            filtered_costs[cost_columns].fillna(0).sum(axis=1).sum()
-        )
-    total_sales_for_alloc = float(profit_trend["sales_amount"].sum())
-    if not profit_trend.empty:
-        if total_sales_for_alloc:
-            profit_trend["allocated_fixed"] = (
-                profit_trend["sales_amount"] / total_sales_for_alloc
-            ) * total_fixed_cost
-        else:
-            profit_trend["allocated_fixed"] = total_fixed_cost / max(
-                len(profit_trend), 1
-            )
-        profit_trend["operating_profit"] = (
-            profit_trend["gross_profit"] - profit_trend["allocated_fixed"]
-        )
-
-    profit_chart = px.line(
-        profit_trend,
-        x="period_label",
-        y="gross_profit",
-        labels={"period_label": "期間", "gross_profit": "粗利"},
-        markers=True,
-    )
-    if "operating_profit" in profit_trend.columns:
-        profit_chart.add_trace(
-            go.Scatter(
-                x=profit_trend["period_label"],
-                y=profit_trend["operating_profit"],
-                mode="lines+markers",
-                name="営業利益",
-                line=dict(color="#2563eb"),
-            )
-        )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("売上トレンド")
-        st.plotly_chart(sales_chart, use_container_width=True)
-    with col2:
-        st.subheader("利益トレンド")
-        st.plotly_chart(profit_chart, use_container_width=True)
-
     overview_df = inventory.inventory_overview(sales_df, filtered_inventory)
     stockouts = (
         int((overview_df["stock_status"] == "在庫切れ").sum())
@@ -1013,42 +921,23 @@ def render_dashboard_tab(
             alert_messages.append(f"在庫欠品{stockouts}件")
         if negative_stores:
             alert_messages.append(f"赤字店舗{negative_stores}店")
-        alert_text = "／".join(alert_messages) + " ➜ 詳細へ"
-        container = st.container()
-        with container:
-            col_alert, col_action = st.columns([4, 1])
-            with col_alert:
-                st.markdown(
-                    f"<div class='alert-box'>⚠️ {alert_text}</div>",
-                    unsafe_allow_html=True,
-                )
-            with col_action:
-                if st.button("詳細へ", key="dashboard-alert-detail") and navigate:
-                    if stockouts:
-                        navigate("inventory")
-                    else:
-                        navigate("profit")
+        alert_text = "／".join(alert_messages)
+        st.markdown(
+            f"<div class='alert-box'>⚠️ {alert_text}</div>",
+            unsafe_allow_html=True,
+        )
     else:
         st.markdown(
-            "<div class='alert-box success'>現在アラートはありません。</div>",
+            "<div class='alert-box success'>主要KPIは安定しています。詳細はタブで確認できます。</div>",
             unsafe_allow_html=True,
         )
 
-    st.markdown("#### 簡易メニュー")
-    quick_items = [
-        ("sales", "売上分析"),
-        ("profit", "利益"),
-        ("product", "商品分析"),
-        ("inventory", "在庫"),
-        ("simulation", "シミュレーション"),
-        ("data", "データ管理"),
-    ]
-    cols = st.columns(len(quick_items))
-    for col, (key, label) in zip(cols, quick_items):
-        if col.button(label, key=f"quick-menu-{key}") and navigate:
-            navigate(key)
+    st.caption(
+        "指標カードは直近期間の実績と前年比較・目標差分を示しています。下部のタブから詳細分析へ進んでください。"
+    )
 
     return pnl_df
+
 
 
 def render_sales_tab(
@@ -1058,6 +947,7 @@ def render_sales_tab(
     *,
     comparison_mode: str,
 ) -> None:
+    colors = _resolve_theme_colors()
     st.markdown("### 売上分析")
 
     state = st.session_state.setdefault(
@@ -1189,6 +1079,7 @@ def render_sales_tab(
         previous_avg_price * 1.02 if previous_avg_price else avg_unit_price
     )
 
+    st.markdown("#### 指標カード")
     _render_kpi_cards(
         [
             {
@@ -1225,31 +1116,60 @@ def render_sales_tab(
         view_filters.period_granularity,
         breakdown_column,
     )
+    custom_data_cols = ["period_key"]
+    if breakdown_column:
+        custom_data_cols.append(breakdown_column)
     timeseries_chart = px.line(
         timeseries_df,
         x="period_label",
         y="sales_amount",
         color=breakdown_column if breakdown_column else None,
         markers=True,
-        labels={"period_label": "期間", "sales_amount": "売上"},
+        labels={"period_label": "期間", "sales_amount": "売上金額（円）"},
+        custom_data=custom_data_cols,
+    )
+    if not breakdown_column:
+        timeseries_chart.update_traces(line=dict(color=colors["primary"], width=3))
+    timeseries_chart.update_layout(
+        yaxis=dict(title="売上金額（円）"),
+        xaxis=dict(title="期間"),
+        hovermode="x unified",
+        legend=dict(
+            title=breakdown_label if breakdown_column else None,
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
     )
     if timeseries_df["comparison_sales"].notna().any():
         timeseries_chart.add_trace(
             go.Scatter(
                 x=timeseries_df["period_label"],
                 y=timeseries_df["comparison_sales"],
-                name="比較期間",
+                name="前年同月",
                 mode="lines+markers",
-                line=dict(dash="dash"),
+                line=dict(color=colors["accent"], dash="dash"),
+                hovertemplate="<b>%{x}</b><br>前年同月: %{y:,.0f} 円<extra></extra>",
             )
         )
     st.subheader(f"売上推移（{breakdown_label}）")
-    st.plotly_chart(timeseries_chart, use_container_width=True)
+    st.caption("グラフをドラッグして範囲選択すると下部の明細が同じ期間に絞り込まれます。")
+    trend_events = plotly_events(
+        timeseries_chart,
+        select_event=True,
+        click_event=True,
+        override_width="100%",
+        override_height=420,
+        key="sales_trend_events",
+    )
 
     st.subheader("チャネル別構成比")
     composition_df = (
         filtered_sales.groupby("channel")["sales_amount"].sum().reset_index()
     )
+    selected_channels: List[str] = []
     if not composition_df.empty:
         composition_df = composition_df.sort_values("sales_amount", ascending=False)
         composition_df["構成比"] = (
@@ -1264,56 +1184,115 @@ def render_sales_tab(
             y="channel",
             orientation="h",
             labels={"sales_amount": "売上金額（円）", "channel": "チャネル"},
-            color_discrete_sequence=["#f97316"],
-            custom_data=["share_percentage"],
+            color_discrete_sequence=[colors["primary"]],
+            custom_data=["share_percentage", "channel"],
+        )
+        channel_composition_chart.update_layout(
+            xaxis_title="売上金額（円）",
+            yaxis_title="チャネル",
         )
         channel_composition_chart.update_traces(
             hovertemplate="<b>%{y}</b><br>売上金額: %{x:,.0f} 円<br>構成比: %{customdata[0]:.1f}%<extra></extra>"
         )
-        st.plotly_chart(channel_composition_chart, use_container_width=True)
+        channel_events = plotly_events(
+            channel_composition_chart,
+            click_event=True,
+            select_event=True,
+            override_width="100%",
+            override_height=360,
+            key="sales_channel_events",
+        )
+        selected_channels = sorted(
+            {
+                event.get("y")
+                for event in channel_events
+                if isinstance(event, dict) and event.get("y")
+            }
+        )
+        if selected_channels:
+            st.caption("選択中のチャネル: " + "、".join(selected_channels))
+        else:
+            st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
         st.dataframe(
             composition_df.rename(
                 columns={"channel": "チャネル", "sales_amount": "売上金額"}
             ).assign(構成比=lambda df: df["構成比"].map(lambda v: f"{v*100:.1f}%")),
             use_container_width=True,
         )
+    else:
+        st.caption("チャネル別の集計データがありません。")
 
     st.subheader("売上明細")
-    details = filtered_sales[
-        [
+    if trend_events:
+        detail_df = sales.drilldown_details(
+            filtered_sales,
+            trend_events,
+            view_filters.period_granularity,
+            breakdown_column,
+        )
+        if selected_channels and "チャネル" in detail_df.columns:
+            detail_df = detail_df[detail_df["チャネル"].isin(selected_channels)]
+    else:
+        detail_columns = [
             "date",
             "store",
-            "channel",
             "category",
+            "region",
+            "channel",
             "product",
             "sales_amount",
-            "sales_qty",
             "gross_profit",
-            "gross_margin",
+            "sales_qty",
         ]
-    ].copy()
-    details = details.sort_values("date", ascending=False)
-    st.dataframe(
-        details.style.format(
-            {
-                "sales_amount": "{:,.0f}",
-                "sales_qty": "{:,.1f}",
-                "gross_profit": "{:,.0f}",
-                "gross_margin": "{:.1%}",
+        detail_df = filtered_sales[detail_columns].copy()
+        if selected_channels:
+            detail_df = detail_df[detail_df["channel"].isin(selected_channels)]
+        detail_df = detail_df.sort_values("date", ascending=False)
+        detail_df["gross_margin"] = (
+            detail_df["gross_profit"]
+            / detail_df["sales_amount"].replace(0, pd.NA)
+        ).fillna(0.0)
+        detail_df = detail_df.rename(
+            columns={
+                "date": "日付",
+                "store": "店舗",
+                "category": "カテゴリ",
+                "region": "地域",
+                "channel": "チャネル",
+                "product": "商品",
+                "sales_amount": "売上",
+                "gross_profit": "粗利",
+                "sales_qty": "販売数量",
+                "gross_margin": "粗利率",
             }
-        ),
-        use_container_width=True,
-    )
+        )
+
+    if detail_df.empty:
+        st.info("選択した条件に該当する売上明細がありません。")
+        export_df = detail_df
+    else:
+        export_df = detail_df
+        st.dataframe(
+            detail_df.style.format(
+                {
+                    "売上": "{:,.0f}",
+                    "粗利": "{:,.0f}",
+                    "販売数量": "{:,.1f}",
+                    "粗利率": "{:.1%}",
+                }
+            ),
+            use_container_width=True,
+        )
 
     report.csv_download(
         "売上データをCSV出力",
-        details,
+        export_df,
         file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}_{filters.end_date:%Y%m%d}.csv",
     )
     report.pdf_download(
         "売上データをPDF出力",
         "売上サマリー",
-        details,
+        export_df,
         file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}.pdf",
     )
 
@@ -1483,11 +1462,19 @@ def render_products_tab(
     )
 
     pareto_chart.update_layout(
-        yaxis=dict(title="売上"),
+        xaxis=dict(title="商品"),
+        yaxis=dict(title="売上金額（円）"),
         yaxis2=dict(
             title="累積構成比（％）",
             overlaying="y",
             side="right",
+        ),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
         ),
         hovermode="x unified",
     )
@@ -1558,6 +1545,7 @@ def render_profitability_tab(
     *,
     navigate: Optional[Callable[[str], None]] = None,
 ) -> pd.DataFrame:
+    colors = _resolve_theme_colors()
     st.markdown("### 利益管理")
 
     state = st.session_state.setdefault(
@@ -1621,30 +1609,11 @@ def render_profitability_tab(
     if selected_store not in store_options:
         selected_store = transformers.ALL_STORES
 
-    ranking_df = pnl_df.sort_values("operating_profit", ascending=False)
-    ranking_chart = px.bar(
-        ranking_df,
-        x="operating_profit",
-        y="store",
-        orientation="h",
-        labels={"operating_profit": "営業利益", "store": "店舗"},
-        color="operating_profit",
-        color_continuous_scale="RdYlGn",
-        color_continuous_midpoint=0,
+    store_choice = st.selectbox(
+        "フォーカス店舗",
+        store_options,
+        index=store_options.index(selected_store),
     )
-    ranking_chart.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
-
-    chart_col, selector_col = st.columns([4, 1])
-    with chart_col:
-        st.subheader("店舗別営業利益ランキング")
-        st.plotly_chart(ranking_chart, use_container_width=True)
-    with selector_col:
-        st.markdown("#### 店舗選択")
-        store_choice = selector_col.selectbox(
-            "表示店舗",
-            store_options,
-            index=store_options.index(selected_store),
-        )
     state["selected_store"] = store_choice
 
     if store_choice != transformers.ALL_STORES:
@@ -1704,7 +1673,284 @@ def render_profitability_tab(
         ]
     )
 
-    table_col, breakdown_col = st.columns([3, 2])
+    trend_sales_df = sales_df.copy()
+    trend_comparison_df = comparison_sales.copy()
+    if store_choice != transformers.ALL_STORES:
+        trend_sales_df = trend_sales_df[trend_sales_df["store"] == store_choice]
+        trend_comparison_df = trend_comparison_df[
+            trend_comparison_df["store"] == store_choice
+        ]
+
+    trend_granularity = filters.period_granularity or "monthly"
+    profit_trend_df = sales.aggregate_timeseries(trend_sales_df, trend_granularity)
+    comparison_trend_df = (
+        sales.aggregate_timeseries(trend_comparison_df, trend_granularity)
+        if not trend_comparison_df.empty
+        else pd.DataFrame(columns=profit_trend_df.columns)
+    )
+    if "store" in edited_df.columns and store_choice != transformers.ALL_STORES:
+        fixed_scope = edited_df[edited_df["store"] == store_choice]
+    else:
+        fixed_scope = edited_df
+    total_fixed_cost_scope = float(fixed_scope[cost_columns].fillna(0).sum().sum())
+    if not profit_trend_df.empty:
+        total_sales_for_alloc = float(profit_trend_df["sales_amount"].sum())
+        if total_sales_for_alloc:
+            profit_trend_df["allocated_fixed"] = (
+                profit_trend_df["sales_amount"] / total_sales_for_alloc
+            ) * total_fixed_cost_scope
+        else:
+            profit_trend_df["allocated_fixed"] = total_fixed_cost_scope / max(
+                len(profit_trend_df), 1
+            )
+        profit_trend_df["operating_profit"] = (
+            profit_trend_df["gross_profit"] - profit_trend_df["allocated_fixed"]
+        )
+
+    if not comparison_trend_df.empty:
+        total_sales_comparison = float(comparison_trend_df["sales_amount"].sum())
+        if total_sales_comparison:
+            comparison_trend_df["allocated_fixed"] = (
+                comparison_trend_df["sales_amount"] / total_sales_comparison
+            ) * total_fixed_cost_scope
+        else:
+            comparison_trend_df["allocated_fixed"] = total_fixed_cost_scope / max(
+                len(comparison_trend_df), 1
+            )
+        comparison_trend_df["operating_profit"] = (
+            comparison_trend_df["gross_profit"]
+            - comparison_trend_df["allocated_fixed"]
+        )
+
+    st.subheader("粗利・営業利益トレンド")
+    if not profit_trend_df.empty:
+        profit_trend_fig = go.Figure()
+        profit_trend_fig.add_trace(
+            go.Scatter(
+                x=profit_trend_df["period_label"],
+                y=profit_trend_df["gross_profit"],
+                mode="lines+markers",
+                name="粗利",
+                line=dict(color=colors["accent"], width=2),
+                hovertemplate="期間: %{x}<br>粗利: %{y:,.0f} 円<extra></extra>",
+            )
+        )
+        if "operating_profit" in profit_trend_df:
+            profit_trend_fig.add_trace(
+                go.Scatter(
+                    x=profit_trend_df["period_label"],
+                    y=profit_trend_df["operating_profit"],
+                    mode="lines+markers",
+                    name="営業利益",
+                    line=dict(color=_adjust_hex_color(colors["accent"], -0.2), width=2),
+                    hovertemplate="期間: %{x}<br>営業利益: %{y:,.0f} 円<extra></extra>",
+                )
+            )
+        if not comparison_trend_df.empty:
+            profit_trend_fig.add_trace(
+                go.Scatter(
+                    x=comparison_trend_df["period_label"],
+                    y=comparison_trend_df["gross_profit"],
+                    mode="lines",
+                    name="前年粗利",
+                    line=dict(color=_adjust_hex_color(colors["accent"], 0.35), dash="dash"),
+                    hovertemplate="期間: %{x}<br>前年粗利: %{y:,.0f} 円<extra></extra>",
+                )
+            )
+            if "operating_profit" in comparison_trend_df:
+                profit_trend_fig.add_trace(
+                    go.Scatter(
+                        x=comparison_trend_df["period_label"],
+                        y=comparison_trend_df["operating_profit"],
+                        mode="lines",
+                        name="前年営業利益",
+                        line=dict(
+                            color=_adjust_hex_color(colors["accent"], 0.15),
+                            dash="dot",
+                        ),
+                        hovertemplate="期間: %{x}<br>前年営業利益: %{y:,.0f} 円<extra></extra>",
+                    )
+                )
+        profit_trend_fig.update_layout(
+            xaxis=dict(title="期間"),
+            yaxis=dict(title="金額（円）"),
+            hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
+        )
+        st.plotly_chart(profit_trend_fig, use_container_width=True)
+    else:
+        st.info("利益トレンドを表示できるデータがありません。")
+
+    ranking_df = pnl_df.sort_values("sales_amount", ascending=False)
+    comparison_fig = go.Figure()
+    metric_config = [
+        ("sales_amount", "売上", colors["primary"]),
+        ("gross_profit", "粗利", colors["accent"]),
+        ("operating_profit", "営業利益", _adjust_hex_color(colors["accent"], -0.2)),
+    ]
+    stores_display = ranking_df.get("store", pd.Series(dtype=str)).fillna("-")
+    for column, label, color in metric_config:
+        if column not in ranking_df:
+            continue
+        comparison_fig.add_trace(
+            go.Bar(
+                y=stores_display.tolist(),
+                x=ranking_df[column].astype(float).tolist(),
+                name=label,
+                orientation="h",
+                marker_color=color,
+                hovertemplate=f"店舗: %{{y}}<br>{label}: %{{x:,.0f}} 円<extra></extra>",
+            )
+        )
+    comparison_fig.update_layout(
+        barmode="group",
+        yaxis=dict(autorange="reversed", title="店舗"),
+        xaxis=dict(title="金額（円）"),
+        legend=dict(
+            title="指標",
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+    )
+
+    st.subheader("店舗別売上・利益比較")
+    st.caption("棒の長さで店舗ごとの売上・利益規模を比較できます。")
+    st.plotly_chart(comparison_fig, use_container_width=True)
+
+    has_store_column = "store" in edited_df.columns
+    if has_store_column:
+        if store_choice == transformers.ALL_STORES:
+            breakdown_series = edited_df[cost_columns].sum()
+        else:
+            breakdown_series = (
+                edited_df[edited_df["store"] == store_choice][cost_columns]
+            ).sum()
+    else:
+        breakdown_series = edited_df[cost_columns].sum()
+
+    breakdown_series = breakdown_series.reindex(cost_columns).fillna(0)
+    breakdown_df = (
+        breakdown_series.reset_index(name="金額").rename(columns={"index": "項目"})
+    )
+    breakdown_df["項目"] = breakdown_df["項目"].map(
+        lambda key: COST_COLUMN_LABELS.get(key, key)
+    )
+
+    color_map, accent_color = _cost_color_mapping(cost_columns)
+    cost_chart = go.Figure()
+    if has_store_column and store_choice == transformers.ALL_STORES:
+        chart_source = (
+            edited_df.groupby("store")[cost_columns]
+            .sum()
+            .reindex(columns=cost_columns, fill_value=0)
+            .reset_index()
+        )
+        x_values = chart_source["store"].astype(str).tolist()
+        for column in cost_columns:
+            if column not in chart_source:
+                continue
+            cost_chart.add_trace(
+                go.Bar(
+                    x=x_values,
+                    y=chart_source[column].astype(float).tolist(),
+                    name=COST_COLUMN_LABELS.get(column, column),
+                    marker_color=color_map[column],
+                    hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
+                )
+            )
+        total_series = chart_source[cost_columns].sum(axis=1)
+        cost_chart.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=total_series.astype(float).tolist(),
+                mode="lines+markers",
+                name="固定費合計",
+                marker_color=_adjust_hex_color(accent_color, -0.25),
+                hovertemplate="%{x}<br>固定費合計: %{y:,.0f}円<extra></extra>",
+            )
+        )
+    else:
+        if has_store_column and store_choice != transformers.ALL_STORES:
+            store_df = edited_df[edited_df["store"] == store_choice]
+        else:
+            store_df = edited_df
+        aggregated_costs = (
+            store_df[cost_columns].fillna(0).sum().reindex(cost_columns, fill_value=0)
+        )
+        stack_label = (
+            store_choice if store_choice != transformers.ALL_STORES else "全店舗"
+        )
+        if not has_store_column and store_choice == transformers.ALL_STORES:
+            stack_label = "全体"
+        stack_label = str(stack_label)
+        for column in cost_columns:
+            cost_chart.add_trace(
+                go.Bar(
+                    x=[stack_label],
+                    y=[float(aggregated_costs.get(column, 0.0))],
+                    name=COST_COLUMN_LABELS.get(column, column),
+                    marker_color=color_map[column],
+                    hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
+                )
+            )
+        total_value = float(aggregated_costs.sum())
+        cost_chart.add_trace(
+            go.Scatter(
+                x=[stack_label],
+                y=[total_value],
+                mode="lines+markers",
+                name="固定費合計",
+                marker_color=_adjust_hex_color(accent_color, -0.25),
+                hovertemplate="%{x}<br>固定費合計: %{y:,.0f}円<extra></extra>",
+            )
+        )
+
+    xaxis_title = (
+        "店舗" if has_store_column and store_choice == transformers.ALL_STORES else "固定費内訳"
+    )
+    cost_chart.update_layout(
+        barmode="stack",
+        xaxis=dict(title=xaxis_title),
+        yaxis=dict(title="金額（円）"),
+        legend=dict(
+            title=dict(text="費目"),
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+        hovermode="x unified",
+    )
+
+    target_fixed_cost = _resolve_target_fixed_cost()
+    if target_fixed_cost is not None:
+        line_color = _adjust_hex_color(accent_color, -0.35)
+        cost_chart.add_hline(
+            y=target_fixed_cost,
+            line_dash="dash",
+            line_color=line_color,
+            annotation_text=f"目標固定費：{target_fixed_cost:,.0f} 円",
+            annotation_position="top left",
+            annotation=dict(
+                font=dict(color=line_color),
+                bgcolor="rgba(255, 255, 255, 0.8)",
+            ),
+        )
+
+    st.subheader("固定費内訳")
+    st.plotly_chart(cost_chart, use_container_width=True)
+    st.dataframe(breakdown_df, use_container_width=True)
+
     styled = focused_df.style.format(
         {
             "sales_amount": "{:,.0f}",
@@ -1720,116 +1966,9 @@ def render_profitability_tab(
         else [""] * len(s),
         axis=0,
     )
-    with table_col:
-        st.subheader("損益表")
-        st.dataframe(styled, use_container_width=True)
 
-        chart_df = profitability.profitability_chart_data(focused_df)
-        chart = px.bar(
-            chart_df,
-            x="store",
-            y=["sales_amount", "gross_profit", "operating_profit"],
-            barmode="group",
-            labels={"value": "金額", "variable": "指標", "store": "店舗"},
-        )
-        st.plotly_chart(chart, use_container_width=True)
-
-    with breakdown_col:
-        st.subheader("固定費内訳")
-        has_store_column = "store" in edited_df.columns
-        if has_store_column:
-            if store_choice == transformers.ALL_STORES:
-                breakdown_series = edited_df[cost_columns].sum()
-            else:
-                breakdown_series = (
-                    edited_df[edited_df["store"] == store_choice][cost_columns]
-                ).sum()
-        else:
-            breakdown_series = edited_df[cost_columns].sum()
-
-        breakdown_series = breakdown_series.reindex(cost_columns).fillna(0)
-        breakdown_df = (
-            breakdown_series.reset_index(name="金額").rename(columns={"index": "項目"})
-        )
-        breakdown_df["項目"] = breakdown_df["項目"].map(
-            lambda key: COST_COLUMN_LABELS.get(key, key)
-        )
-
-        color_map, accent_color = _cost_color_mapping(cost_columns)
-        cost_chart = go.Figure()
-        if has_store_column and store_choice == transformers.ALL_STORES:
-            chart_source = (
-                edited_df.groupby("store")[cost_columns]
-                .sum()
-                .reindex(columns=cost_columns, fill_value=0)
-                .reset_index()
-            )
-            x_values = chart_source["store"].astype(str).tolist()
-            for column in cost_columns:
-                if column not in chart_source:
-                    continue
-                cost_chart.add_trace(
-                    go.Bar(
-                        x=x_values,
-                        y=chart_source[column].astype(float).tolist(),
-                        name=COST_COLUMN_LABELS.get(column, column),
-                        marker_color=color_map[column],
-                        hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
-                    )
-                )
-        else:
-            if has_store_column and store_choice != transformers.ALL_STORES:
-                store_df = edited_df[edited_df["store"] == store_choice]
-            else:
-                store_df = edited_df
-            aggregated_costs = (
-                store_df[cost_columns].fillna(0).sum().reindex(cost_columns, fill_value=0)
-            )
-            stack_label = (
-                store_choice if store_choice != transformers.ALL_STORES else "全店舗"
-            )
-            if not has_store_column and store_choice == transformers.ALL_STORES:
-                stack_label = "全体"
-            stack_label = str(stack_label)
-            for column in cost_columns:
-                cost_chart.add_trace(
-                    go.Bar(
-                        x=[stack_label],
-                        y=[float(aggregated_costs.get(column, 0.0))],
-                        name=COST_COLUMN_LABELS.get(column, column),
-                        marker_color=color_map[column],
-                        hovertemplate="%{x}<br>%{fullData.name}: %{y:,.0f}円<extra></extra>",
-                    )
-                )
-
-        xaxis_title = (
-            "店舗" if has_store_column and store_choice == transformers.ALL_STORES else "固定費内訳"
-        )
-        cost_chart.update_layout(
-            barmode="stack",
-            xaxis=dict(title=xaxis_title),
-            yaxis=dict(title="金額（円）"),
-            legend=dict(title=dict(text="費目")),
-            hovermode="x unified",
-        )
-
-        target_fixed_cost = _resolve_target_fixed_cost()
-        if target_fixed_cost is not None:
-            line_color = _adjust_hex_color(accent_color, -0.35)
-            cost_chart.add_hline(
-                y=target_fixed_cost,
-                line_dash="dash",
-                line_color=line_color,
-                annotation_text=f"目標固定費：{target_fixed_cost:,.0f} 円",
-                annotation_position="top left",
-                annotation=dict(
-                    font=dict(color=line_color),
-                    bgcolor="rgba(255, 255, 255, 0.8)",
-                ),
-            )
-
-        st.plotly_chart(cost_chart, use_container_width=True)
-        st.dataframe(breakdown_df, use_container_width=True)
+    st.subheader("損益明細")
+    st.dataframe(styled, use_container_width=True)
 
     if navigate is not None:
         st.info("シミュレーションで目標利益を検討できます。")
@@ -1837,13 +1976,13 @@ def render_profitability_tab(
             navigate("simulation")
 
     return pnl_df
-
 def render_inventory_tab(
     sales_df: pd.DataFrame,
     inventory_df: pd.DataFrame,
     abc_df: Optional[pd.DataFrame],
     filters: transformers.FilterState,
 ) -> None:
+    colors = _resolve_theme_colors()
     st.markdown("### 在庫分析")
 
     store_options = sorted(inventory_df["store"].dropna().unique().tolist())
@@ -1862,6 +2001,52 @@ def render_inventory_tab(
     alert_settings = st.session_state.get("alert_settings", {})
     stockout_threshold = int(alert_settings.get("stockout_threshold", 0))
     excess_threshold = int(alert_settings.get("excess_threshold", 5))
+
+    def _build_inventory_timeseries(
+        sales_subset: pd.DataFrame,
+        inventory_subset: pd.DataFrame,
+    ) -> pd.DataFrame:
+        if inventory_subset.empty:
+            return pd.DataFrame(columns=["date", "estimated_stock", "safety_stock"])
+        date_range = pd.date_range(filters.start_date, filters.end_date, freq="D")
+        records = []
+        for _, row in inventory_subset.iterrows():
+            store_name = row.get("store")
+            product_name = row.get("product")
+            available = float(row.get("opening_stock", 0)) + float(
+                row.get("planned_purchase", 0)
+            )
+            safety = float(row.get("safety_stock", 0))
+            product_sales = sales_subset.copy()
+            if "store" in product_sales.columns:
+                product_sales = product_sales[product_sales["store"] == store_name]
+            if "product" in product_sales.columns:
+                product_sales = product_sales[product_sales["product"] == product_name]
+            daily_sales = (
+                product_sales.groupby(product_sales["date"].dt.floor("D"))["sales_qty"]
+                .sum()
+                .reindex(date_range, fill_value=0)
+            )
+            remaining = (available - daily_sales.cumsum()).clip(lower=0)
+            records.append(
+                pd.DataFrame(
+                    {
+                        "date": date_range,
+                        "store": store_name,
+                        "estimated_stock": remaining,
+                        "safety_stock": safety,
+                    }
+                )
+            )
+        if not records:
+            return pd.DataFrame(columns=["date", "estimated_stock", "safety_stock"])
+        combined = pd.concat(records)
+        aggregated = (
+            combined.groupby("date")[["estimated_stock", "safety_stock"]]
+            .sum()
+            .reset_index()
+        )
+        return aggregated
 
     def _focus_stockouts() -> None:
         tab_state = st.session_state.setdefault("inventory_tab_state", {})
@@ -1969,6 +2154,55 @@ def render_inventory_tab(
         ]
     )
 
+    timeseries_df = _build_inventory_timeseries(working_sales, working_inventory)
+    st.subheader("在庫推移")
+    if not timeseries_df.empty:
+        inventory_trend = go.Figure()
+        inventory_trend.add_trace(
+            go.Scatter(
+                x=timeseries_df["date"],
+                y=timeseries_df["estimated_stock"],
+                mode="lines",
+                name="推定在庫",
+                line=dict(color=colors["primary"], width=2),
+                fill="tozeroy",
+                hovertemplate="日付: %{x|%Y-%m-%d}<br>推定在庫: %{y:,.0f} 個<extra></extra>",
+            )
+        )
+        inventory_trend.add_trace(
+            go.Scatter(
+                x=timeseries_df["date"],
+                y=timeseries_df["safety_stock"],
+                mode="lines",
+                name="安全在庫ライン",
+                line=dict(color=colors["success"], dash="dash"),
+                hovertemplate="日付: %{x|%Y-%m-%d}<br>安全在庫: %{y:,.0f} 個<extra></extra>",
+            )
+        )
+        shortage_mask = (
+            timeseries_df["estimated_stock"] < timeseries_df["safety_stock"]
+        )
+        if shortage_mask.any():
+            inventory_trend.add_trace(
+                go.Scatter(
+                    x=timeseries_df.loc[shortage_mask, "date"],
+                    y=timeseries_df.loc[shortage_mask, "estimated_stock"],
+                    mode="markers",
+                    name="欠品リスク",
+                    marker=dict(color=colors["error"], size=8),
+                    hovertemplate="日付: %{x|%Y-%m-%d}<br>在庫: %{y:,.0f} 個<extra></extra>",
+                )
+            )
+        inventory_trend.update_layout(
+            xaxis=dict(title="日付"),
+            yaxis=dict(title="数量（個）"),
+            hovermode="x unified",
+        )
+        st.caption("安全在庫を下回る日には赤色マーカーで表示します。")
+        st.plotly_chart(inventory_trend, use_container_width=True)
+    else:
+        st.info("在庫推移を表示できるデータが不足しています。")
+
     focused_advice = advice_df.copy()
     focus_mode = state.get("focus", "all")
     if focus_mode == "stockout":
@@ -1993,7 +2227,12 @@ def render_inventory_tab(
         y="store",
         z="estimated_stock",
         color_continuous_scale="Blues",
-        labels={"estimated_stock": "推定在庫"},
+        labels={"estimated_stock": "推定在庫（個）", "category": "カテゴリ", "store": "店舗"},
+    )
+    heatmap.update_layout(
+        xaxis_title="カテゴリ",
+        yaxis_title="店舗",
+        coloraxis_colorbar=dict(title="推定在庫（個）"),
     )
     with heatmap_col:
         st.subheader("在庫ヒートマップ")
@@ -2020,10 +2259,6 @@ def render_data_management_tab(
     status_df = pd.DataFrame(status_rows)
     st.subheader("取込状況")
     st.dataframe(status_df, use_container_width=True)
-
-    def _navigate_to_sales() -> None:
-        st.session_state[NAV_STATE_KEY] = "sales"
-        st.experimental_rerun()
 
     if status_df["件数"].sum() == 0:
         sample_path = Path(sample_files.get("sales", "")) if sample_files else None
@@ -2052,8 +2287,8 @@ def render_data_management_tab(
         render_guided_message(
             "complete",
             message_kwargs={"timestamp": updated_at.strftime("%Y-%m-%d %H:%M")},
-            action={"on_click": _navigate_to_sales, "key": "complete-to-sales"},
         )
+        st.caption("売上タブで最新データをご確認ください。")
 
     st.subheader("CSVアップロード")
     uploaded_files = st.file_uploader(
@@ -2093,12 +2328,288 @@ def render_data_management_tab(
             )
 
     import_dashboard.render_dashboard(validation_results, integration_result)
-def render_simulation_tab(
+
+def render_cash_tab(
+    sales_df: pd.DataFrame,
+    comparison_sales: pd.DataFrame,
+    inventory_df: pd.DataFrame,
     pnl_df: pd.DataFrame,
     filters: transformers.FilterState,
 ) -> None:
-    st.subheader("損益シミュレーション")
-    total_sales = float(pnl_df["sales_amount"].sum())
+    colors = _resolve_theme_colors()
+    st.subheader("資金繰りダッシュボード")
+
+    cash_current = _cash_flow_summary(sales_df, inventory_df)
+    cash_previous = _cash_flow_summary(comparison_sales, inventory_df)
+    total_sales = float(sales_df["sales_amount"].sum())
+    cash_target = total_sales * TARGET_CASH_RATIO if total_sales else cash_current["balance"]
+
+    _render_kpi_cards(
+        [
+            {
+                "label": "資金残高",
+                "value_text": _format_currency(cash_current["balance"]),
+                "unit": "円",
+                "yoy": _compute_growth(cash_current["balance"], cash_previous.get("balance")),
+                "target_diff": cash_current["balance"] - cash_target,
+            },
+            {
+                "label": "入金予定",
+                "value_text": _format_currency(cash_current["receivable"]),
+                "unit": "円",
+                "yoy": _compute_growth(cash_current["receivable"], cash_previous.get("receivable")),
+                "target_diff": cash_current["receivable"],
+            },
+            {
+                "label": "支払予定",
+                "value_text": _format_currency(cash_current["payable"]),
+                "unit": "円",
+                "yoy": _compute_growth(cash_current["payable"], cash_previous.get("payable")),
+                "target_diff": -cash_current["payable"],
+            },
+        ]
+    )
+
+    granularity = filters.period_granularity or "monthly"
+
+    def _cash_timeseries(dataset: pd.DataFrame) -> pd.DataFrame:
+        if dataset.empty:
+            return pd.DataFrame(
+                columns=[
+                    "period_start",
+                    "period_label",
+                    "balance",
+                    "deposit",
+                    "receivable",
+                    "payable",
+                    "scope",
+                ]
+            )
+        aggregated = sales.aggregate_timeseries(dataset, granularity)
+        records = []
+        for _, row in aggregated.iterrows():
+            start, end = sales.period_bounds(row["period_key"], granularity)
+            mask = (dataset["date"] >= start) & (dataset["date"] <= end)
+            summary = _cash_flow_summary(dataset.loc[mask], inventory_df)
+            records.append(
+                {
+                    "period_start": row["period_start"],
+                    "period_label": row["period_label"],
+                    "balance": summary["balance"],
+                    "deposit": summary["deposit"],
+                    "receivable": summary["receivable"],
+                    "payable": summary["payable"],
+                    "scope": "actual",
+                }
+            )
+        return pd.DataFrame(records)
+
+    def _forecast_cash_flow(history: pd.DataFrame, periods: int = 3) -> pd.DataFrame:
+        if history.empty or periods <= 0:
+            return pd.DataFrame(
+                columns=[
+                    "period_start",
+                    "period_label",
+                    "balance",
+                    "deposit",
+                    "receivable",
+                    "payable",
+                    "scope",
+                ]
+            )
+
+        actual_history = history.sort_values("period_start")
+        value_columns = ["balance", "deposit", "receivable", "payable"]
+        delta_map: Dict[str, float] = {}
+        for column in value_columns:
+            if column not in actual_history:
+                delta_map[column] = 0.0
+                continue
+            deltas = actual_history[column].diff().dropna()
+            delta = float(deltas.mean()) if not deltas.empty else 0.0
+            if pd.isna(delta):
+                delta = 0.0
+            delta_map[column] = delta
+
+        offsets = {
+            "daily": pd.DateOffset(days=1),
+            "weekly": pd.DateOffset(weeks=1),
+            "monthly": pd.DateOffset(months=1),
+            "yearly": pd.DateOffset(years=1),
+        }
+        offset = offsets.get(granularity, pd.DateOffset(months=1))
+
+        last_row = actual_history.iloc[-1]
+        next_start = last_row["period_start"] + offset
+        label_format = sales.GRANULARITY_CONFIG.get(granularity, {}).get(
+            "format", "%Y-%m-%d"
+        )
+        values = {column: float(last_row[column]) for column in value_columns}
+
+        records = []
+        for _ in range(periods):
+            for column, delta in delta_map.items():
+                values[column] = float(values[column] + delta)
+            records.append(
+                {
+                    "period_start": next_start,
+                    "period_label": next_start.strftime(label_format),
+                    "balance": values["balance"],
+                    "deposit": values["deposit"],
+                    "receivable": values["receivable"],
+                    "payable": values["payable"],
+                    "scope": "forecast",
+                }
+            )
+            next_start = next_start + offset
+
+        return pd.DataFrame(records)
+
+    cash_trend_df = _cash_timeseries(sales_df)
+    comparison_trend_df = _cash_timeseries(comparison_sales)
+
+    tick_format_map = {
+        "daily": "%Y-%m-%d",
+        "weekly": "%Y-%m-%d",
+        "monthly": "%Y-%m",
+        "yearly": "%Y",
+    }
+    tick_format = tick_format_map.get(granularity, "%Y-%m")
+
+    st.subheader("現預金推移")
+    if not cash_trend_df.empty:
+        cash_chart = go.Figure()
+        cash_chart.add_trace(
+            go.Scatter(
+                x=cash_trend_df["period_start"],
+                y=cash_trend_df["balance"],
+                mode="lines+markers",
+                name="資金残高",
+                line=dict(color=colors["primary"], width=2),
+                text=cash_trend_df["period_label"],
+                hovertemplate="期間: %{text}<br>資金残高: %{y:,.0f} 円<extra></extra>",
+            )
+        )
+        if not comparison_trend_df.empty:
+            cash_chart.add_trace(
+                go.Scatter(
+                    x=comparison_trend_df["period_start"],
+                    y=comparison_trend_df["balance"],
+                    mode="lines",
+                    name="前年資金残高",
+                    line=dict(color=_adjust_hex_color(colors["primary"], 0.3), dash="dash"),
+                    text=comparison_trend_df["period_label"],
+                    hovertemplate="期間: %{text}<br>前年資金残高: %{y:,.0f} 円<extra></extra>",
+                )
+            )
+        cash_chart.update_layout(
+            xaxis=dict(title="期間", type="date", tickformat=tick_format),
+            yaxis=dict(title="金額（円）"),
+            hovermode="x unified",
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1,
+            ),
+        )
+        st.plotly_chart(cash_chart, use_container_width=True)
+    else:
+        st.info("現預金推移を表示できるデータがありません。")
+
+    if not cash_trend_df.empty:
+        forecast_df = _forecast_cash_flow(cash_trend_df)
+        projection_df = pd.concat(
+            [cash_trend_df, forecast_df], ignore_index=True, sort=False
+        )
+        projection_df = projection_df.sort_values("period_start")
+        st.subheader("資金繰り予測（入出金構成）")
+        area_source = projection_df.melt(
+            id_vars=["period_start", "period_label", "scope"],
+            value_vars=["deposit", "receivable", "payable"],
+            var_name="component",
+            value_name="amount",
+        )
+        if area_source.empty:
+            st.info("資金繰り予測を算出するためのデータが不足しています。")
+        else:
+            area_source = area_source.copy()
+            area_source["display_amount"] = area_source["amount"]
+            payable_mask = area_source["component"] == "payable"
+            area_source.loc[payable_mask, "display_amount"] *= -1
+            component_labels = {
+                "deposit": "預金",
+                "receivable": "売掛金",
+                "payable": "買掛金",
+            }
+            component_colors = {
+                "deposit": colors["primary"],
+                "receivable": _adjust_hex_color(colors["primary"], 0.25),
+                "payable": colors["error"],
+            }
+            scope_labels = {"actual": "実績", "forecast": "予測"}
+            area_fig = go.Figure()
+            for component, label in component_labels.items():
+                comp_data = area_source[area_source["component"] == component].sort_values(
+                    "period_start"
+                )
+                if comp_data.empty:
+                    continue
+                area_fig.add_trace(
+                    go.Scatter(
+                        x=comp_data["period_start"],
+                        y=comp_data["display_amount"],
+                        name=label,
+                        stackgroup="cash_projection",
+                        mode="lines",
+                        line=dict(color=component_colors[component], width=2),
+                        text=comp_data["period_label"],
+                        customdata=comp_data["scope"].map(scope_labels).fillna("実績"),
+                        hovertemplate=f"期間: %{{text}}<br>{label}: %{{y:,.0f}} 円<br>%{{customdata}}<extra></extra>",
+                    )
+                )
+            area_fig.update_layout(
+                xaxis=dict(title="期間", type="date", tickformat=tick_format),
+                yaxis=dict(title="金額（円）"),
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1,
+                ),
+                hovermode="x unified",
+            )
+            if not forecast_df.empty:
+                forecast_start = pd.to_datetime(forecast_df["period_start"].min())
+                forecast_end = pd.to_datetime(forecast_df["period_start"].max())
+                area_fig.add_vrect(
+                    x0=forecast_start,
+                    x1=forecast_end,
+                    fillcolor=_adjust_hex_color(colors["neutral"], 0.2),
+                    opacity=0.2,
+                    line_width=0,
+                    layer="below",
+                )
+                midpoint = (
+                    forecast_start + (forecast_end - forecast_start) / 2
+                    if forecast_end > forecast_start
+                    else forecast_start
+                )
+                area_fig.add_annotation(
+                    x=midpoint,
+                    y=0,
+                    yref="paper",
+                    text="予測期間",
+                    showarrow=False,
+                    font=dict(color=colors["text"]),
+                    bgcolor="rgba(255, 255, 255, 0.8)",
+                )
+            st.plotly_chart(area_fig, use_container_width=True)
+            st.caption("正の領域は資金の流入（預金・売掛金）、負の領域は支払予定を表します。網掛け部分は推計期間です。")
+
+    st.subheader("資金繰りシミュレーション")
     total_gross_profit = float(pnl_df["gross_profit"].sum())
     default_margin = total_gross_profit / total_sales if total_sales else 0.45
     default_margin = float(min(max(default_margin, 0.3), 0.8))
@@ -2223,7 +2734,7 @@ def render_simulation_tab(
     requirements = simulation.required_sales(inputs)
     breakeven_sales_value = float(requirements["breakeven"])
     target_sales_value = float(requirements["target_sales"])
-    current_sales_value = float(total_sales)
+    current_sales_value = total_sales
     progress_ratio = (
         current_sales_value / target_sales_value if target_sales_value > 0 else 0.0
     )
@@ -2273,11 +2784,11 @@ def render_simulation_tab(
         """
         st.markdown(summary_card_html, unsafe_allow_html=True)
 
-        success_color = "#2e7d32"
-        success_bg = "#d9f2e6"
-        error_color = "#c0392b"
-        error_bg = "#f8d7da"
-        neutral_bg = "#e9ecef"
+        success_color = colors["success"]
+        error_color = colors["error"]
+        success_bg = _adjust_hex_color(success_color, 0.75)
+        error_bg = _adjust_hex_color(error_color, 0.75)
+        neutral_bg = _adjust_hex_color(colors["neutral"], 0.6)
 
         gauge_config: Dict[str, object] = {
             "axis": {"range": [0, gauge_max], "tickformat": ",.0f"},
@@ -2387,8 +2898,6 @@ def render_simulation_tab(
         else:
             st.info("保存されたシナリオはまだありません。")
 
-
-
 def main() -> None:
     st.title("松屋 計数管理ダッシュボード")
     _inject_global_styles()
@@ -2468,80 +2977,83 @@ def main() -> None:
         datasets["sales"], global_filters, "previous_period"
     )
 
-    def _navigate(tab_key: str) -> None:
-        st.session_state[NAV_STATE_KEY] = tab_key
-        st.experimental_rerun()
 
-    tab_labels = [label for _, label in MAIN_TAB_CONFIG]
-    current_tab = st.session_state.get(NAV_STATE_KEY, DEFAULT_NAV_KEY)
-    current_index = next(
-        (idx for idx, (key, _) in enumerate(MAIN_TAB_CONFIG) if key == current_tab),
-        0,
-    )
-    selected_label = st.radio(
-        "画面切替",
-        tab_labels,
-        index=current_index,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-    selected_key = next(
-        key for key, label in MAIN_TAB_CONFIG if label == selected_label
-    )
-    st.session_state[NAV_STATE_KEY] = selected_key
 
     pnl_baseline = profitability.store_profitability(
         filtered_sales,
         datasets["fixed_costs"],
     )
 
-    if selected_key == "dashboard":
-        pnl_df = render_dashboard_tab(
-            filtered_sales,
-            dashboard_comparison,
-            global_filters,
-            datasets["fixed_costs"],
-            datasets["inventory"],
-            navigate=_navigate,
-        )
-        st.session_state["latest_pnl_df"] = pnl_df
-    elif selected_key == "sales":
+    pnl_df = render_dashboard_tab(
+        filtered_sales,
+        dashboard_comparison,
+        global_filters,
+        datasets["fixed_costs"],
+        datasets["inventory"],
+    )
+    st.session_state["latest_pnl_df"] = pnl_df
+
+    sales_tab, profit_tab, inventory_tab, cash_tab = st.tabs(
+        ["売上", "粗利", "在庫", "資金"]
+    )
+
+    with sales_tab:
         render_sales_tab(
             datasets["sales"],
             global_filters,
             channels,
             comparison_mode="yoy",
         )
-    elif selected_key == "product":
-        abc_df, _ = render_products_tab(filtered_sales, dashboard_comparison, global_filters)
+        st.divider()
+        abc_df, _ = render_products_tab(
+            filtered_sales, dashboard_comparison, global_filters
+        )
         st.session_state["latest_abc_df"] = abc_df
-    elif selected_key == "profit":
-        pnl_df = render_profitability_tab(
+
+    with profit_tab:
+        pnl_view = render_profitability_tab(
             filtered_sales,
             dashboard_comparison,
             datasets["fixed_costs"],
             global_filters,
-            navigate=_navigate,
         )
-        st.session_state["latest_pnl_df"] = pnl_df
-    elif selected_key == "inventory":
-        abc_df = st.session_state.get("latest_abc_df")
-        if abc_df is None:
-            abc_df = products.abc_analysis(filtered_sales, dashboard_comparison)
-            st.session_state["latest_abc_df"] = abc_df
-        render_inventory_tab(filtered_sales, datasets["inventory"], abc_df, global_filters)
-    elif selected_key == "simulation":
-        pnl_df = st.session_state.get("latest_pnl_df", pnl_baseline)
-        render_simulation_tab(pnl_df, global_filters)
-    else:
-        integration_display = integration_result or st.session_state.get("latest_api_result")
-        render_data_management_tab(
-            validation_results,
-            integration_display,
-            baseline,
-            sample_files_for_ui,
-            templates,
+        st.session_state["latest_pnl_df"] = pnl_view
+
+    with inventory_tab:
+        abc_df_cached = st.session_state.get("latest_abc_df")
+        if abc_df_cached is None:
+            abc_df_cached = products.abc_analysis(
+                filtered_sales, dashboard_comparison
+            )
+            st.session_state["latest_abc_df"] = abc_df_cached
+        render_inventory_tab(
+            filtered_sales,
+            datasets["inventory"],
+            abc_df_cached,
+            global_filters,
         )
+
+    with cash_tab:
+        pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
+        render_cash_tab(
+            filtered_sales,
+            dashboard_comparison,
+            datasets["inventory"],
+            pnl_for_cash,
+            global_filters,
+        )
+
+    st.divider()
+    integration_display = integration_result or st.session_state.get(
+        "latest_api_result"
+    )
+    render_data_management_tab(
+        validation_results,
+        integration_display,
+        baseline,
+        sample_files_for_ui,
+        templates,
+    )
 
 if __name__ == "__main__":
     main()

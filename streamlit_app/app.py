@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
@@ -288,6 +288,114 @@ MAIN_TAB_CONFIG = [
 TARGET_MARGIN_RATE = 0.12
 TARGET_CASH_RATIO = 0.25
 BASE_CASH_BUFFER = 3_000_000.0
+KPI_ALERT_THRESHOLD = -0.05
+
+
+MESSAGE_DICTIONARY = {
+    "empty": {
+        "level": "warning",
+        "message": "データが見つかりません。サイドバーからCSVをアップロードしてください。",
+        "guidance": "サンプルCSVを利用して動作確認ができます。",
+        "action_label": "サンプルデータをダウンロード",
+    },
+    "loading": {
+        "level": "info",
+        "message": "データを読み込み中です。完了までしばらくお待ちください…",
+        "guidance": "アップロード内容に応じて数秒〜1分ほどかかる場合があります。",
+        "show_progress": True,
+    },
+    "complete": {
+        "level": "success",
+        "message": "データ取り込みが完了しました。更新日時：{timestamp}",
+        "guidance": "最新データを反映した分析へ移動できます。",
+        "action_label": "売上分析へ",
+    },
+    "error": {
+        "level": "error",
+        "message": "読み込みに失敗しました：{reason}",
+        "guidance": "期待される列名やテンプレートをご確認のうえ、再度アップロードしてください。",
+        "action_label": "テンプレートを見る",
+    },
+    "stock_alert": {
+        "level": "warning",
+        "message": "在庫が安全在庫を下回りました。欠品商品：{highlight}",
+        "guidance": "発注量の目安を確認し、早急に補充を検討してください。",
+        "action_label": "発注リストを確認",
+    },
+    "deficit_alert": {
+        "level": "error",
+        "message": "{store}が営業赤字です（{amount}円）。対策を検討してください。",
+        "guidance": "原因分析ページで粗利・固定費の内訳を確認し、改善策を検討しましょう。",
+        "action_label": "損益詳細を開く",
+    },
+}
+
+
+def render_guided_message(
+    state_key: str,
+    *,
+    message_kwargs: Optional[Dict[str, object]] = None,
+    action: Optional[Dict[str, object]] = None,
+    progress: Optional[float] = None,
+) -> None:
+    """Render a contextual message with optional actions based on a dictionary key."""
+
+    config = MESSAGE_DICTIONARY.get(state_key)
+    if config is None:
+        return
+
+    message_kwargs = message_kwargs or {}
+    text = config.get("message", "").format(**message_kwargs)
+    level = config.get("level", "info")
+    guidance = config.get("guidance")
+    show_progress = config.get("show_progress", False)
+
+    container = st.container()
+    if level == "success":
+        container.success(text)
+    elif level == "warning":
+        container.warning(text)
+    elif level == "error":
+        container.error(text)
+    else:
+        container.info(text)
+
+    if guidance:
+        container.caption(guidance)
+
+    if show_progress:
+        progress_value = progress if progress is not None else 0.0
+        container.progress(min(max(progress_value, 0.0), 1.0))
+
+    resolved_action = action or {}
+    label = resolved_action.get("label") or config.get("action_label")
+    if label:
+        action_type = resolved_action.get("type", "button")
+        key = resolved_action.get("key") or f"message-action-{state_key}"
+        if action_type == "download":
+            data = resolved_action.get("data")
+            file_name = resolved_action.get("file_name", "download.csv")
+            mime = resolved_action.get("mime", "text/csv")
+            if data is not None:
+                container.download_button(
+                    label,
+                    data=data,
+                    file_name=file_name,
+                    mime=mime,
+                    key=key,
+                )
+        elif action_type == "link":
+            url = resolved_action.get("url")
+            if url:
+                container.link_button(label, url, key=key)
+        else:
+            container.button(
+                label,
+                key=key,
+                on_click=resolved_action.get("on_click"),
+                args=resolved_action.get("args", ()),
+                kwargs=resolved_action.get("kwargs", {}),
+            )
 
 
 def _inject_global_styles() -> None:
@@ -302,6 +410,14 @@ def _inject_global_styles() -> None:
             padding: 1.1rem 1.2rem;
             box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
             margin-bottom: 0.8rem;
+            }
+        .kpi-card.alert {
+            background: #fef2f2;
+            border: 1px solid #fca5a5;
+        }
+        .kpi-card.caution {
+            background: #fff7ed;
+            border: 1px solid #fdba74;
         }
         .kpi-card .label {
             font-size: 0.9rem;
@@ -462,9 +578,18 @@ def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
         target_class = "positive" if target_diff >= 0 else "negative"
         target_unit = card.get("unit", "")
         target_suffix = f" {target_unit}" if target_unit else ""
-        column.markdown(
+        classes = ["kpi-card"]
+        if card.get("alert"):
+            classes.append("alert")
+        elif yoy is not None and yoy <= KPI_ALERT_THRESHOLD:
+            classes.append("alert")
+        elif target_diff < 0:
+            classes.append("caution")
+
+        card_container = column.container()
+        card_container.markdown(
             f"""
-            <div class="kpi-card">
+            <div class="{' '.join(classes)}">
                 <div class="label">{card.get('label', '')}</div>
                 <div class="value">{card.get('value_text', '')}</div>
                 <div class="delta {delta_class}">{yoy_text}</div>
@@ -473,6 +598,25 @@ def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
             """,
             unsafe_allow_html=True,
         )
+
+        action_conf = card.get("action") or {}
+        action_label = action_conf.get("label")
+        if action_label:
+            action_type = action_conf.get("type", "button")
+            action_key = action_conf.get("key") or f"kpi-card-action-{card.get('label', '')}"
+            if action_type == "link":
+                url = action_conf.get("url")
+                if url:
+                    card_container.link_button(action_label, url, key=action_key)
+            else:
+                card_container.button(
+                    action_label,
+                    key=action_key,
+                    on_click=action_conf.get("on_click"),
+                    args=action_conf.get("args", ()),
+                    kwargs=action_conf.get("kwargs", {}),
+                    help=action_conf.get("help"),
+                )
 
 
 def _cash_flow_summary(sales_df: pd.DataFrame, inventory_df: pd.DataFrame) -> Dict[str, float]:
@@ -517,12 +661,14 @@ def render_global_filter_bar(
     default_period: Tuple[date, date],
     bounds: Tuple[date, date],
 ) -> transformers.FilterState:
+    saved_store = st.session_state.setdefault("selected_store", transformers.ALL_STORES)
+    saved_range = st.session_state.setdefault("date_range", default_period)
     state = st.session_state.setdefault(
         GLOBAL_FILTER_KEY,
         {
-            "preset": "今月",
-            "custom_range": default_period,
-            "store": transformers.ALL_STORES,
+            "preset": "直近30日",
+            "custom_range": saved_range,
+            "store": saved_store,
         },
     )
 
@@ -539,7 +685,7 @@ def render_global_filter_bar(
         )
 
         store_options = [transformers.ALL_STORES, *stores] if stores else [transformers.ALL_STORES]
-        selected_store = state.get("store", transformers.ALL_STORES)
+        selected_store = state.get("store", saved_store)
         store_index = (
             store_options.index(selected_store)
             if selected_store in store_options
@@ -568,6 +714,8 @@ def render_global_filter_bar(
             "custom_range": (start_date, end_date),
         }
     )
+    st.session_state["selected_store"] = store_choice
+    st.session_state["date_range"] = (start_date, end_date)
 
     selected_stores = list(stores)
     if store_choice != transformers.ALL_STORES and store_choice:
@@ -641,6 +789,37 @@ def render_dashboard_tab(
     cash_previous = _cash_flow_summary(comparison_sales, filtered_inventory)
     cash_target = sales_target * TARGET_CASH_RATIO
 
+    sales_action = (
+        {
+            "label": "売上分析を開く",
+            "on_click": navigate,
+            "args": ("sales",),
+            "key": "dashboard-kpi-sales",
+        }
+        if navigate
+        else {}
+    )
+    profit_action = (
+        {
+            "label": "損益詳細を開く",
+            "on_click": navigate,
+            "args": ("profit",),
+            "key": "dashboard-kpi-profit",
+        }
+        if navigate
+        else {}
+    )
+    cash_action = (
+        {
+            "label": "シミュレーションへ",
+            "on_click": navigate,
+            "args": ("simulation",),
+            "key": "dashboard-kpi-cash",
+        }
+        if navigate
+        else {}
+    )
+
     _render_kpi_cards(
         [
             {
@@ -649,6 +828,7 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(total_sales, previous_sales),
                 "target_diff": total_sales - sales_target,
+                "action": sales_action,
             },
             {
                 "label": "営業利益",
@@ -656,6 +836,7 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(operating_profit, previous_operating_profit),
                 "target_diff": operating_profit - profit_target,
+                "action": profit_action,
             },
             {
                 "label": "資金残高",
@@ -665,6 +846,7 @@ def render_dashboard_tab(
                     cash_current["balance"], cash_previous.get("balance")
                 ),
                 "target_diff": cash_current["balance"] - cash_target,
+                "action": cash_action,
             },
         ]
     )
@@ -821,41 +1003,56 @@ def render_sales_tab(
     granularity_options = {"月次": "monthly", "週次": "weekly", "日次": "daily"}
     breakdown_options = {
         "店舗別": "store",
+        "チャネル別": "channel",
         "カテゴリ別": "category",
         "地域別": "region",
     }
     comparison_options = {"前年比": "yoy", "対前期比": "previous_period"}
 
     with st.container():
-        cols = st.columns(4)
-        channel_choice = cols[0].selectbox(
-            "チャネル",
-            channel_options,
-            index=channel_options.index(
-                state.get("channel", transformers.ALL_CHANNELS)
-            ),
+        control_cols = st.columns([2, 3, 3])
+        channel_index = channel_options.index(
+            state.get("channel", transformers.ALL_CHANNELS)
         )
-        granularity_label = cols[1].selectbox(
-            "粒度",
-            list(granularity_options.keys()),
-            index=list(granularity_options.values()).index(
-                state.get("granularity", "monthly")
-            ),
-        )
-        breakdown_label = cols[2].selectbox(
+        if len(channel_options) <= 4:
+            channel_choice = control_cols[0].radio(
+                "チャネル",
+                channel_options,
+                index=channel_index,
+                horizontal=True,
+            )
+        else:
+            channel_choice = control_cols[0].selectbox(
+                "チャネル",
+                channel_options,
+                index=channel_index,
+            )
+
+        breakdown_label = control_cols[1].radio(
             "表示単位",
             list(breakdown_options.keys()),
             index=list(breakdown_options.values()).index(
                 state.get("breakdown", "store")
             ),
+            horizontal=True,
         )
-        comparison_label = cols[3].selectbox(
+        comparison_label = control_cols[2].radio(
             "比較",
             list(comparison_options.keys()),
             index=list(comparison_options.values()).index(
                 state.get("comparison", comparison_mode)
             ),
+            horizontal=True,
         )
+
+    granularity_label = st.radio(
+        "粒度",
+        list(granularity_options.keys()),
+        index=list(granularity_options.values()).index(
+            state.get("granularity", "monthly")
+        ),
+        horizontal=True,
+    )
 
     state.update(
         {
@@ -887,7 +1084,7 @@ def render_sales_tab(
     )
 
     if filtered_sales.empty:
-        st.info("該当データがありません")
+        render_guided_message("empty")
         return
 
     kpis = sales.kpi_summary(filtered_sales, comparison_sales)
@@ -1091,21 +1288,28 @@ def render_products_tab(
     _render_kpi_cards(
         [
             {
-                "label": "トップ5売上/構成比",
-                "value_text": f"{top5_sales:,.0f} 円 / {share*100:.1f}%",
+                "label": "トップ5売上",
+                "value_text": f"{top5_sales:,.0f} 円",
                 "unit": "円",
                 "yoy": _compute_growth(top5_sales, previous_top5),
                 "target_diff": top5_sales - target_value,
-            }
+            },
+            {
+                "label": "トップ5構成比",
+                "value_text": f"{share*100:.1f}%",
+                "unit": "%",
+                "yoy": None,
+                "target_diff": (share - target_share) * 100,
+            },
         ]
     )
 
     abc_df = products.abc_analysis(working_sales, working_comparison)
     if abc_df.empty:
-        st.info("ABC分析を実行できません")
+        render_guided_message("empty")
         return abc_df, abc_df
 
-    st.subheader("ABC分析チャート")
+    st.subheader("ABC分析とAランク動向")
     pareto_df = products.pareto_chart_data(abc_df)
     pareto_chart = go.Figure()
     pareto_chart.add_bar(
@@ -1131,22 +1335,39 @@ def render_products_tab(
         ),
         hovermode="x unified",
     )
-    st.plotly_chart(pareto_chart, use_container_width=True)
 
-    st.dataframe(abc_df, use_container_width=True)
+    chart_col, growth_col = st.columns([3, 2])
+    with chart_col:
+        st.plotly_chart(pareto_chart, use_container_width=True)
 
-    st.subheader("Aランク商品の伸長率トップ3")
     top_growth = products.top_growth_products(abc_df)
-    if top_growth.empty:
-        st.info("前年データが不足しているため、伸長率を計算できません。")
-    else:
-        cols = st.columns(len(top_growth))
-        for col, (_, row) in zip(cols, top_growth.iterrows()):
-            col.metric(
-                row["product"],
-                f"{row['sales_amount']:,.0f} 円",
-                f"{row['yoy_growth']*100:.1f}%",
-            )
+    with growth_col:
+        st.markdown("#### Aランク伸長率トップ3")
+        if top_growth.empty:
+            st.info("前年データが不足しているため、伸長率を計算できません。")
+        else:
+            for _, row in top_growth.iterrows():
+                st.metric(
+                    row["product"],
+                    f"{row['sales_amount']:,.0f} 円",
+                    f"{row['yoy_growth']*100:.1f}%",
+                )
+
+    with st.expander("ABC分析テーブル", expanded=False):
+        st.dataframe(abc_df, use_container_width=True)
+
+    st.markdown("#### トップ5商品一覧")
+    top5_display = top5.copy()
+    top5_display["構成比"] = (
+        top5_display["sales_amount"] / total_sales if total_sales else 0.0
+    )
+    top5_display = top5_display.rename(columns={"product": "商品", "sales_amount": "売上"})
+    st.dataframe(
+        top5_display.assign(
+            構成比=lambda df: df["構成比"].map(lambda value: f"{value*100:.1f}%")
+        ),
+        use_container_width=True,
+    )
 
     st.subheader("商品明細")
     detail_df = working_sales[
@@ -1183,6 +1404,12 @@ def render_profitability_tab(
 ) -> pd.DataFrame:
     st.markdown("### 利益管理")
 
+    state = st.session_state.setdefault(
+        "profit_tab_state",
+        {"selected_store": transformers.ALL_STORES},
+    )
+    alert_settings = st.session_state.get("alert_settings", {})
+    deficit_threshold = float(alert_settings.get("deficit_threshold", 0))
     cost_columns = ["rent", "payroll", "utilities", "marketing", "other_fixed"]
     adjusted = st.session_state.get("adjusted_fixed_costs")
     base_costs = fixed_costs_df.copy()
@@ -1210,24 +1437,85 @@ def render_profitability_tab(
         else pd.DataFrame(columns=pnl_df.columns)
     )
 
-    total_sales = float(pnl_df["sales_amount"].sum())
-    gross_profit = float(pnl_df["gross_profit"].sum())
-    operating_profit = float(pnl_df["operating_profit"].sum())
+    def _focus_profit_store(store_name: str) -> None:
+        tab_state = st.session_state.setdefault("profit_tab_state", {})
+        tab_state["selected_store"] = store_name
+
+    negative = pnl_df[pnl_df["operating_profit"] <= deficit_threshold]
+    if not negative.empty:
+        worst = negative.sort_values("operating_profit").iloc[0]
+        render_guided_message(
+            "deficit_alert",
+            message_kwargs={
+                "store": worst["store"],
+                "amount": f"{worst['operating_profit']:,.0f}",
+            },
+            action={
+                "on_click": _focus_profit_store,
+                "args": (worst["store"],),
+                "key": "deficit-alert-action",
+            },
+        )
+
+    store_options = [
+        transformers.ALL_STORES,
+        *sorted(pnl_df.get("store", pd.Series(dtype=str)).dropna().unique().tolist()),
+    ]
+    selected_store = state.get("selected_store", transformers.ALL_STORES)
+    if selected_store not in store_options:
+        selected_store = transformers.ALL_STORES
+
+    ranking_df = pnl_df.sort_values("operating_profit", ascending=False)
+    ranking_chart = px.bar(
+        ranking_df,
+        x="operating_profit",
+        y="store",
+        orientation="h",
+        labels={"operating_profit": "営業利益", "store": "店舗"},
+        color="operating_profit",
+        color_continuous_scale="RdYlGn",
+        color_continuous_midpoint=0,
+    )
+    ranking_chart.update_layout(yaxis=dict(autorange="reversed"), coloraxis_showscale=False)
+
+    chart_col, selector_col = st.columns([4, 1])
+    with chart_col:
+        st.subheader("店舗別営業利益ランキング")
+        st.plotly_chart(ranking_chart, use_container_width=True)
+    with selector_col:
+        st.markdown("#### 店舗選択")
+        store_choice = selector_col.selectbox(
+            "表示店舗",
+            store_options,
+            index=store_options.index(selected_store),
+        )
+    state["selected_store"] = store_choice
+
+    if store_choice != transformers.ALL_STORES:
+        focused_df = pnl_df[pnl_df["store"] == store_choice]
+        focused_comparison = comparison_pnl[comparison_pnl["store"] == store_choice]
+    else:
+        focused_df = pnl_df
+        focused_comparison = comparison_pnl
+
+    total_sales = float(focused_df["sales_amount"].sum())
+    gross_profit = float(focused_df["gross_profit"].sum())
+    operating_profit = float(focused_df["operating_profit"].sum())
     gross_margin = gross_profit / total_sales if total_sales else 0.0
 
     previous_operating = (
-        float(comparison_pnl["operating_profit"].sum())
-        if not comparison_pnl.empty
+        float(focused_comparison["operating_profit"].sum())
+        if not focused_comparison.empty
         else None
     )
     previous_gross = (
-        float(comparison_pnl["gross_profit"].sum())
-        if not comparison_pnl.empty
+        float(focused_comparison["gross_profit"].sum())
+        if not focused_comparison.empty
         else None
     )
     previous_sales_total = (
-        float(comparison_pnl["sales_amount"].sum())
-        if not comparison_pnl.empty
+        float(focused_comparison["sales_amount"].sum())
+        if not focused_comparison.empty
         else None
     )
     previous_margin = (
@@ -1243,13 +1531,13 @@ def render_profitability_tab(
                 "yoy": _compute_growth(gross_profit, previous_gross),
                 "target_diff": gross_profit - total_sales * TARGET_MARGIN_RATE,
             },
-                {
-                    "label": "粗利率",
-                    "value_text": f"{gross_margin*100:.1f}%",
-                    "unit": "%",
-                    "yoy": _compute_growth(gross_margin, previous_margin),
-                    "target_diff": (gross_margin - TARGET_MARGIN_RATE) * 100,
-                },
+            {
+                "label": "粗利率",
+                "value_text": f"{gross_margin*100:.1f}%",
+                "unit": "%",
+                "yoy": _compute_growth(gross_margin, previous_margin),
+                "target_diff": (gross_margin - TARGET_MARGIN_RATE) * 100,
+            },
             {
                 "label": "営業利益",
                 "value_text": _format_currency(operating_profit),
@@ -1260,8 +1548,8 @@ def render_profitability_tab(
         ]
     )
 
-    st.subheader("店舗別損益表")
-    styled = pnl_df.style.format(
+    table_col, breakdown_col = st.columns([3, 2])
+    styled = focused_df.style.format(
         {
             "sales_amount": "{:,.0f}",
             "gross_profit": "{:,.0f}",
@@ -1276,21 +1564,43 @@ def render_profitability_tab(
         else [""] * len(s),
         axis=0,
     )
-    st.dataframe(styled, use_container_width=True)
+    with table_col:
+        st.subheader("損益表")
+        st.dataframe(styled, use_container_width=True)
 
-    negative = pnl_df[pnl_df["operating_profit"] < 0]
-    if not negative.empty:
-        st.warning("赤字店舗があります。詳細を確認してください。")
+        chart_df = profitability.profitability_chart_data(focused_df)
+        chart = px.bar(
+            chart_df,
+            x="store",
+            y=["sales_amount", "gross_profit", "operating_profit"],
+            barmode="group",
+            labels={"value": "金額", "variable": "指標", "store": "店舗"},
+        )
+        st.plotly_chart(chart, use_container_width=True)
 
-    chart_df = profitability.profitability_chart_data(pnl_df)
-    chart = px.bar(
-        chart_df,
-        x="store",
-        y=["sales_amount", "gross_profit", "operating_profit"],
-        barmode="group",
-        labels={"value": "金額", "variable": "指標"},
-    )
-    st.plotly_chart(chart, use_container_width=True)
+    with breakdown_col:
+        st.subheader("固定費内訳")
+        if "store" in edited_df.columns:
+            if store_choice == transformers.ALL_STORES:
+                breakdown_series = edited_df[cost_columns].sum()
+            else:
+                breakdown_series = (
+                    edited_df[edited_df["store"] == store_choice][cost_columns]
+                ).sum()
+        else:
+            breakdown_series = edited_df[cost_columns].sum()
+
+        breakdown_df = breakdown_series.reset_index(name="金額").rename(
+            columns={"index": "項目"}
+        )
+        cost_chart = px.pie(
+            breakdown_df,
+            names="項目",
+            values="金額",
+            hole=0.4,
+        )
+        st.plotly_chart(cost_chart, use_container_width=True)
+        st.dataframe(breakdown_df, use_container_width=True)
 
     if navigate is not None:
         st.info("シミュレーションで目標利益を検討できます。")
@@ -1317,8 +1627,17 @@ def render_inventory_tab(
         {
             "store": filters.store,
             "category": filters.category,
+            "focus": "all",
         },
     )
+    alert_settings = st.session_state.get("alert_settings", {})
+    stockout_threshold = int(alert_settings.get("stockout_threshold", 0))
+    excess_threshold = int(alert_settings.get("excess_threshold", 5))
+
+    def _focus_stockouts() -> None:
+        tab_state = st.session_state.setdefault("inventory_tab_state", {})
+        tab_state["focus"] = "stockout"
+
     with st.container():
         col1, col2 = st.columns(2)
         store_choice = col1.selectbox(
@@ -1336,6 +1655,19 @@ def render_inventory_tab(
             else 0,
         )
     state.update({"store": store_choice, "category": category_choice})
+
+    focus_map = {"全件": "all", "欠品のみ": "stockout", "過剰のみ": "excess"}
+    focus_values = list(focus_map.values())
+    focus_labels = list(focus_map.keys())
+    current_focus = state.get("focus", "all")
+    focus_index = focus_values.index(current_focus) if current_focus in focus_values else 0
+    focus_label = st.radio(
+        "表示対象",
+        focus_labels,
+        index=focus_index,
+        horizontal=True,
+    )
+    state["focus"] = focus_map[focus_label]
 
     working_sales = sales_df.copy()
     working_inventory = inventory_df.copy()
@@ -1369,37 +1701,62 @@ def render_inventory_tab(
     turnover_df = inventory.turnover_by_category(overview_df, period_days=period_days)
     avg_turnover = float(turnover_df["turnover"].mean()) if not turnover_df.empty else 0.0
 
+    shortage_products = advice_df[advice_df["stock_status"] == "在庫切れ"]["product"].dropna().tolist()
+    if stockouts > stockout_threshold and shortage_products:
+        highlight = shortage_products[0]
+        if len(shortage_products) > 1:
+            highlight += f" 他{len(shortage_products) - 1}件"
+        render_guided_message(
+            "stock_alert",
+            message_kwargs={"highlight": highlight},
+            action={"on_click": _focus_stockouts, "key": "stockout-alert-action"},
+        )
+
     _render_kpi_cards(
         [
             {
-                "label": "安全在庫超過数",
+                "label": "過剰在庫数",
                 "value_text": _format_number(safety_excess, "品目"),
                 "unit": "品目",
                 "yoy": None,
-                "target_diff": -safety_excess,
+                "target_diff": excess_threshold - safety_excess,
+                "alert": safety_excess > excess_threshold,
             },
             {
-                "label": "欠品数",
+                "label": "安全在庫欠品数",
                 "value_text": _format_number(stockouts, "品目"),
                 "unit": "品目",
                 "yoy": None,
-                "target_diff": -stockouts,
+                "target_diff": stockout_threshold - stockouts,
+                "alert": stockouts > stockout_threshold,
             },
-                {
-                    "label": "平均在庫回転率",
-                    "value_text": f"{avg_turnover:.1f} 回",
-                    "unit": "回",
-                    "yoy": None,
-                    "target_diff": avg_turnover - 8,
-                },
+            {
+                "label": "平均在庫回転率",
+                "value_text": f"{avg_turnover:.1f} 回",
+                "unit": "回",
+                "yoy": None,
+                "target_diff": avg_turnover - 8,
+            },
         ]
     )
 
-    st.subheader("在庫推定とアドバイス")
-    st.dataframe(advice_df, use_container_width=True)
+    focused_advice = advice_df.copy()
+    focus_mode = state.get("focus", "all")
+    if focus_mode == "stockout":
+        focused_advice = focused_advice[focused_advice["stock_status"] == "在庫切れ"]
+    elif focus_mode == "excess":
+        focused_advice = focused_advice[focused_advice["stock_status"] == "在庫過多"]
 
-    st.subheader("カテゴリ別在庫回転率")
-    st.dataframe(turnover_df, use_container_width=True)
+    with st.expander("在庫推定表", expanded=False):
+        if focused_advice.empty:
+            st.info("該当する在庫データがありません。")
+        else:
+            st.dataframe(focused_advice, use_container_width=True)
+
+    turnover_col, heatmap_col = st.columns(2)
+    with turnover_col:
+        st.subheader("カテゴリ別在庫回転率")
+        st.dataframe(turnover_df, use_container_width=True)
 
     heatmap = px.density_heatmap(
         advice_df,
@@ -1409,22 +1766,225 @@ def render_inventory_tab(
         color_continuous_scale="Blues",
         labels={"estimated_stock": "推定在庫"},
     )
-    st.plotly_chart(heatmap, use_container_width=True)
+    with heatmap_col:
+        st.subheader("在庫ヒートマップ")
+        st.plotly_chart(heatmap, use_container_width=True)
+
+
+def render_data_management_tab(
+    validation_results: Dict[str, data_loader.ValidationResult],
+    integration_result: Optional[IntegrationResult],
+    baseline: Dict[str, pd.DataFrame],
+    sample_files: Dict[str, str],
+    templates: Dict[str, bytes],
+) -> None:
+    st.markdown("### データ管理")
+
+    dataset_labels = {"sales": "売上", "inventory": "仕入/在庫", "fixed_costs": "固定費"}
+    current_datasets = st.session_state.get("current_datasets", baseline)
+    status_rows = []
+    for key, label in dataset_labels.items():
+        df = current_datasets.get(key, baseline.get(key, pd.DataFrame()))
+        row_count = len(df) if df is not None else 0
+        status = "取込済" if row_count else "未取込"
+        status_rows.append({"データ種別": label, "件数": row_count, "ステータス": status})
+    status_df = pd.DataFrame(status_rows)
+    st.subheader("取込状況")
+    st.dataframe(status_df, use_container_width=True)
+
+    def _navigate_to_sales() -> None:
+        st.session_state[NAV_STATE_KEY] = "sales"
+        st.experimental_rerun()
+
+    if status_df["件数"].sum() == 0:
+        sample_path = Path(sample_files.get("sales", "")) if sample_files else None
+        action: Optional[Dict[str, object]] = None
+        if sample_path and sample_path.exists():
+            action = {
+                "type": "download",
+                "data": sample_path.read_bytes(),
+                "file_name": sample_path.name,
+            }
+        render_guided_message("empty", action=action)
+
+    invalid_results = [
+        result
+        for result in validation_results.values()
+        if result is not None and not result.valid
+    ]
+    if invalid_results:
+        first_error = invalid_results[0]
+        reason = "フォーマットエラー"
+        if first_error.errors is not None and not first_error.errors.empty:
+            reason = str(first_error.errors.iloc[0]["内容"])
+        render_guided_message("error", message_kwargs={"reason": reason})
+    elif validation_results:
+        updated_at = st.session_state.get("last_data_update", datetime.now())
+        render_guided_message(
+            "complete",
+            message_kwargs={"timestamp": updated_at.strftime("%Y-%m-%d %H:%M")},
+            action={"on_click": _navigate_to_sales, "key": "complete-to-sales"},
+        )
+
+    st.subheader("CSVアップロード")
+    uploaded_files = st.file_uploader(
+        "3種類のCSVをまとめてアップロード",
+        type="csv",
+        accept_multiple_files=True,
+        key="data_tab_uploader",
+    )
+    mapping: Dict[str, object] = {}
+    if uploaded_files:
+        st.caption("各ファイルのデータ種別を選択してください")
+        label_to_key = {v: k for k, v in dataset_labels.items()}
+        for idx, file in enumerate(uploaded_files):
+            choice = st.selectbox(
+                f"{file.name}",
+                list(dataset_labels.values()),
+                key=f"data_tab_choice_{file.name}_{idx}",
+            )
+            mapping[label_to_key[choice]] = file
+        if st.button("アップロードを取り込む", key="data_tab_apply_upload"):
+            new_datasets, validations = _handle_csv_uploads(mapping, baseline)
+            st.session_state["current_datasets"] = new_datasets
+            st.session_state["data_tab_validations"] = validations
+            st.session_state["current_source"] = "csv"
+            st.session_state["last_data_update"] = datetime.now()
+            st.success("アップロードを反映しました。")
+            st.experimental_rerun()
+
+    with st.expander("テンプレートをダウンロード", expanded=False):
+        for key, content in templates.items():
+            label = dataset_labels.get(key, key)
+            st.download_button(
+                f"{label}テンプレートをダウンロード",
+                data=content,
+                file_name=f"{key}_template.csv",
+                key=f"data-tab-template-{key}",
+            )
+
+    import_dashboard.render_dashboard(validation_results, integration_result)
 def render_simulation_tab(
     pnl_df: pd.DataFrame,
     filters: transformers.FilterState,
 ) -> None:
     st.subheader("損益シミュレーション")
-    total_sales = pnl_df["sales_amount"].sum()
-    total_gross_profit = pnl_df["gross_profit"].sum()
+    total_sales = float(pnl_df["sales_amount"].sum())
+    total_gross_profit = float(pnl_df["gross_profit"].sum())
     default_margin = total_gross_profit / total_sales if total_sales else 0.45
     default_margin = float(min(max(default_margin, 0.3), 0.8))
-    default_fixed_cost = pnl_df["total_fixed_cost"].sum()
+    default_fixed_cost = float(pnl_df["total_fixed_cost"].sum())
 
-    col1, col2, col3 = st.columns(3)
-    gross_margin = col1.slider("粗利率", min_value=0.3, max_value=0.8, value=float(round(default_margin, 2)), step=0.01)
-    fixed_cost = col2.number_input("固定費合計", min_value=0.0, value=float(default_fixed_cost), step=10000.0)
-    target_profit = col3.number_input("目標利益", min_value=0.0, value=500000.0, step=50000.0)
+    defaults = st.session_state.setdefault(
+        "simulation_defaults",
+        {
+            "gross_margin": float(round(default_margin, 2)),
+            "fixed_cost": float(default_fixed_cost),
+            "target_profit": 5_000_000.0,
+        },
+    )
+    defaults.update(
+        {
+            "gross_margin": float(round(default_margin, 2)) if default_margin else defaults["gross_margin"],
+            "fixed_cost": float(default_fixed_cost) if default_fixed_cost else defaults["fixed_cost"],
+        }
+    )
+
+    st.session_state.setdefault("simulation_margin", defaults["gross_margin"])
+    st.session_state.setdefault("simulation_fixed_cost", defaults["fixed_cost"])
+    st.session_state.setdefault("simulation_target_value", defaults.get("target_profit", 5_000_000.0))
+    st.session_state.setdefault("simulation_margin_slider", st.session_state["simulation_margin"])
+    st.session_state.setdefault("simulation_margin_input", st.session_state["simulation_margin"])
+    st.session_state.setdefault("simulation_fixed_slider", st.session_state["simulation_fixed_cost"])
+    st.session_state.setdefault("simulation_fixed_input", st.session_state["simulation_fixed_cost"])
+    st.session_state.setdefault("simulation_target_input", st.session_state["simulation_target_value"])
+
+    def _update_margin_from_slider() -> None:
+        st.session_state["simulation_margin"] = float(st.session_state["simulation_margin_slider"])
+        st.session_state["simulation_margin_input"] = st.session_state["simulation_margin"]
+
+    def _update_margin_from_input() -> None:
+        st.session_state["simulation_margin"] = float(st.session_state["simulation_margin_input"])
+        st.session_state["simulation_margin_slider"] = st.session_state["simulation_margin"]
+
+    def _update_fixed_from_slider() -> None:
+        st.session_state["simulation_fixed_cost"] = float(st.session_state["simulation_fixed_slider"])
+        st.session_state["simulation_fixed_input"] = st.session_state["simulation_fixed_cost"]
+
+    def _update_fixed_from_input() -> None:
+        st.session_state["simulation_fixed_cost"] = float(st.session_state["simulation_fixed_input"])
+        st.session_state["simulation_fixed_slider"] = st.session_state["simulation_fixed_cost"]
+
+    margin_slider_col, margin_input_col = st.columns([3, 1])
+    margin_slider_col.slider(
+        "粗利率",
+        min_value=0.3,
+        max_value=0.8,
+        value=float(st.session_state["simulation_margin_slider"]),
+        step=0.01,
+        key="simulation_margin_slider",
+        on_change=_update_margin_from_slider,
+    )
+    margin_input_col.number_input(
+        "粗利率 (直接入力)",
+        min_value=0.3,
+        max_value=0.8,
+        value=float(st.session_state["simulation_margin_input"]),
+        step=0.01,
+        format="%.2f",
+        key="simulation_margin_input",
+        on_change=_update_margin_from_input,
+    )
+
+    max_fixed_range = max(
+        st.session_state["simulation_fixed_cost"] * 1.5,
+        defaults["fixed_cost"] * 1.5,
+        5_000_000.0,
+    )
+    fixed_slider_col, fixed_input_col = st.columns([3, 1])
+    fixed_slider_col.slider(
+        "固定費合計",
+        min_value=0.0,
+        max_value=float(max_fixed_range),
+        value=float(st.session_state["simulation_fixed_slider"]),
+        step=100000.0,
+        key="simulation_fixed_slider",
+        on_change=_update_fixed_from_slider,
+        format="%0.0f",
+    )
+    fixed_input_col.number_input(
+        "固定費 (直接入力)",
+        min_value=0.0,
+        value=float(st.session_state["simulation_fixed_input"]),
+        step=50000.0,
+        key="simulation_fixed_input",
+        on_change=_update_fixed_from_input,
+        format="%0.0f",
+    )
+
+    preset_options = {"500万円": 5_000_000.0, "1,000万円": 10_000_000.0, "カスタム": None}
+    st.session_state.setdefault("simulation_target_preset", "500万円")
+    preset_label = st.radio(
+        "目標利益プリセット",
+        list(preset_options.keys()),
+        horizontal=True,
+        key="simulation_target_preset",
+    )
+    if preset_options[preset_label] is not None:
+        st.session_state["simulation_target_value"] = float(preset_options[preset_label])
+        st.session_state["simulation_target_input"] = st.session_state["simulation_target_value"]
+
+    target_profit = st.number_input(
+        "目標利益 (円)",
+        min_value=0.0,
+        value=float(st.session_state["simulation_target_input"]),
+        step=50000.0,
+        key="simulation_target_input",
+    )
+    st.session_state["simulation_target_value"] = target_profit
+
+    gross_margin = float(st.session_state["simulation_margin"])
+    fixed_cost = float(st.session_state["simulation_fixed_cost"])
 
     inputs = simulation.SimulationInputs(
         gross_margin=gross_margin,
@@ -1433,8 +1993,13 @@ def render_simulation_tab(
     )
     requirements = simulation.required_sales(inputs)
 
-    st.metric("損益分岐点売上", f"{requirements['breakeven']:,.0f} 円")
-    st.metric("目標利益達成に必要な売上", f"{requirements['target_sales']:,.0f} 円")
+    defaults.update(
+        {
+            "gross_margin": gross_margin,
+            "fixed_cost": fixed_cost,
+            "target_profit": target_profit,
+        }
+    )
 
     curve = simulation.breakeven_sales_curve(simulation.DEFAULT_MARGIN_RANGE, fixed_cost)
     curve_chart = px.line(
@@ -1445,30 +2010,68 @@ def render_simulation_tab(
     )
     st.plotly_chart(curve_chart, use_container_width=True)
 
-    st.subheader("シナリオ保存")
-    scenario_name = st.text_input("シナリオ名", value=f"{filters.store}_{filters.start_date:%Y%m%d}")
-    if st.button("シナリオを保存"):
-        scenario = {
-            "name": scenario_name,
-            "gross_margin": gross_margin,
-            "fixed_cost": fixed_cost,
-            "target_profit": target_profit,
-            "breakeven": requirements["breakeven"],
-            "target_sales": requirements["target_sales"],
-        }
-        scenarios = st.session_state.setdefault("saved_scenarios", [])
-        scenarios.append(scenario)
-        st.success("シナリオを保存しました。")
+    results_col, saved_col = st.columns([3, 2])
+    with results_col:
+        metric_cols = st.columns(2)
+        metric_cols[0].metric("損益分岐点売上", f"{requirements['breakeven']:,.0f} 円")
+        metric_cols[1].metric("目標利益達成に必要な売上", f"{requirements['target_sales']:,.0f} 円")
 
-    if st.session_state.get("saved_scenarios"):
-        scenarios_df = pd.DataFrame(st.session_state["saved_scenarios"])
-        st.dataframe(scenarios_df, use_container_width=True)
-        csv_bytes = scenarios_df.to_csv(index=False).encode("utf-8-sig")
-        st.download_button(
-            "シナリオ一覧をダウンロード",
-            data=csv_bytes,
-            file_name="matsuya_simulation_scenarios.csv",
+        default_name = st.session_state.get("simulation_scenario_name")
+        if not default_name:
+            default_name = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+            st.session_state["simulation_scenario_name"] = default_name
+        scenario_name = st.text_input(
+            "シナリオ名",
+            value=st.session_state["simulation_scenario_name"],
+            key="simulation_scenario_name",
         )
+
+        if st.button("シナリオを保存", key="save_simulation_scenario"):
+            scenario = {
+                "name": scenario_name,
+                "gross_margin": gross_margin,
+                "fixed_cost": fixed_cost,
+                "target_profit": target_profit,
+                "breakeven": requirements["breakeven"],
+                "target_sales": requirements["target_sales"],
+                "saved_at": datetime.now().isoformat(),
+            }
+            scenarios = st.session_state.setdefault("saved_scenarios", [])
+            scenarios.append(scenario)
+            st.session_state["simulation_scenario_name"] = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+            st.success("シナリオを保存しました。")
+
+    saved_scenarios = st.session_state.setdefault("saved_scenarios", [])
+    with saved_col:
+        if saved_scenarios:
+            selected_index = st.selectbox(
+                "シナリオを読み込む",
+                options=list(range(len(saved_scenarios))),
+                format_func=lambda idx: saved_scenarios[idx]["name"],
+                key="simulation_selected_scenario",
+            )
+            selected = saved_scenarios[selected_index]
+            if st.button("選択したシナリオを適用", key="apply_simulation_scenario"):
+                st.session_state["simulation_margin"] = float(selected["gross_margin"])
+                st.session_state["simulation_fixed_cost"] = float(selected["fixed_cost"])
+                st.session_state["simulation_target_value"] = float(selected["target_profit"])
+                st.session_state["simulation_margin_slider"] = st.session_state["simulation_margin"]
+                st.session_state["simulation_margin_input"] = st.session_state["simulation_margin"]
+                st.session_state["simulation_fixed_slider"] = st.session_state["simulation_fixed_cost"]
+                st.session_state["simulation_fixed_input"] = st.session_state["simulation_fixed_cost"]
+                st.session_state["simulation_target_input"] = st.session_state["simulation_target_value"]
+                st.experimental_rerun()
+
+            scenarios_df = pd.DataFrame(saved_scenarios)
+            st.dataframe(scenarios_df, use_container_width=True)
+            csv_bytes = scenarios_df.to_csv(index=False).encode("utf-8-sig")
+            st.download_button(
+                "シナリオ一覧をダウンロード",
+                data=csv_bytes,
+                file_name="matsuya_simulation_scenarios.csv",
+            )
+        else:
+            st.info("保存されたシナリオはまだありません。")
 
 
 
@@ -1478,6 +2081,7 @@ def main() -> None:
 
     sample_files = data_loader.available_sample_files()
     templates = data_loader.available_templates()
+    sample_files_for_ui = {k: str(v) for k, v in sample_files.items()}
     baseline = load_datasets(None, None, None)
 
     if "current_datasets" not in st.session_state:
@@ -1499,7 +2103,7 @@ def main() -> None:
         default_period=default_period,
         regions=regions,
         channels=channels,
-        sample_files={k: str(v) for k, v in sample_files.items()},
+        sample_files=sample_files_for_ui,
         templates=templates,
         providers=provider_options,
         show_filters=False,
@@ -1521,6 +2125,10 @@ def main() -> None:
         )
     else:
         datasets = active_datasets
+
+    extra_validations = st.session_state.get("data_tab_validations")
+    if extra_validations:
+        validation_results.update(extra_validations)
 
     if not datasets:
         datasets = active_datasets
@@ -1613,7 +2221,13 @@ def main() -> None:
         render_simulation_tab(pnl_df, global_filters)
     else:
         integration_display = integration_result or st.session_state.get("latest_api_result")
-        import_dashboard.render_dashboard(validation_results, integration_display)
+        render_data_management_tab(
+            validation_results,
+            integration_display,
+            baseline,
+            sample_files_for_ui,
+            templates,
+        )
 
 if __name__ == "__main__":
     main()

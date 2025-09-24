@@ -137,6 +137,41 @@ def render_sidebar(
                 key=f"template-{key}",
             )
 
+    alert_state = st.session_state.setdefault(
+        "alert_settings",
+        {
+            "stockout_threshold": 0,
+            "excess_threshold": 5,
+            "deficit_threshold": -500000,
+        },
+    )
+    st.sidebar.header("アラート設定")
+    stockout_threshold = st.sidebar.number_input(
+        "欠品アラート基準 (品目数)",
+        min_value=0,
+        value=int(alert_state.get("stockout_threshold", 0)),
+        step=1,
+    )
+    excess_threshold = st.sidebar.number_input(
+        "過剰在庫アラート基準 (品目数)",
+        min_value=0,
+        value=int(alert_state.get("excess_threshold", 5)),
+        step=1,
+    )
+    deficit_threshold = st.sidebar.number_input(
+        "赤字アラート基準 (円)",
+        value=int(alert_state.get("deficit_threshold", -500000)),
+        step=50000,
+        format="%d",
+    )
+    alert_state.update(
+        {
+            "stockout_threshold": int(stockout_threshold),
+            "excess_threshold": int(excess_threshold),
+            "deficit_threshold": float(deficit_threshold),
+        }
+    )
+
     export_csv = export_pdf = False
     comparison_label = list(COMPARISON_OPTIONS.keys())[0]
     period_label = list(PERIOD_OPTIONS.keys())[2]
@@ -220,4 +255,5 @@ def render_sidebar(
         "comparison_mode": COMPARISON_OPTIONS[comparison_label],
         "export_csv": export_csv,
         "export_pdf": export_pdf,
+        "alert_settings": alert_state,
     }

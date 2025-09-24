@@ -1176,21 +1176,30 @@ def render_sales_tab(
         filtered_sales.groupby("channel")["sales_amount"].sum().reset_index()
     )
     if not composition_df.empty:
+        composition_df = composition_df.sort_values("sales_amount", ascending=False)
         composition_df["構成比"] = (
             composition_df["sales_amount"] / composition_df["sales_amount"].sum()
         )
-        pie = px.pie(
-            composition_df,
-            names="channel",
-            values="sales_amount",
-            hole=0.35,
+        plot_df = composition_df.assign(
+            share_percentage=lambda df: df["構成比"] * 100
         )
-        st.plotly_chart(pie, use_container_width=True)
+        channel_composition_chart = px.bar(
+            plot_df,
+            x="sales_amount",
+            y="channel",
+            orientation="h",
+            labels={"sales_amount": "売上金額（円）", "channel": "チャネル"},
+            color_discrete_sequence=["#f97316"],
+            custom_data=["share_percentage"],
+        )
+        channel_composition_chart.update_traces(
+            hovertemplate="<b>%{y}</b><br>売上金額: %{x:,.0f} 円<br>構成比: %{customdata[0]:.1f}%<extra></extra>"
+        )
+        st.plotly_chart(channel_composition_chart, use_container_width=True)
         st.dataframe(
             composition_df.rename(
-                columns={"channel": "チャネル", "sales_amount": "売上"}
-            )
-            .assign(構成比=lambda df: df["構成比"].map(lambda v: f"{v*100:.1f}%")),
+                columns={"channel": "チャネル", "sales_amount": "売上金額"}
+            ).assign(構成比=lambda df: df["構成比"].map(lambda v: f"{v*100:.1f}%")),
             use_container_width=True,
         )
 

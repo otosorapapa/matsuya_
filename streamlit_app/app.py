@@ -2073,6 +2073,15 @@ def render_simulation_tab(
         target_profit=target_profit,
     )
     requirements = simulation.required_sales(inputs)
+    breakeven_sales_value = float(requirements["breakeven"])
+    target_sales_value = float(requirements["target_sales"])
+    current_sales_value = float(total_sales)
+    progress_ratio = (
+        current_sales_value / target_sales_value if target_sales_value > 0 else 0.0
+    )
+    reached_target = target_sales_value > 0 and current_sales_value >= target_sales_value
+    gauge_base = max(target_sales_value, current_sales_value)
+    gauge_max = gauge_base * 1.1 if gauge_base else 1.0
 
     defaults.update(
         {
@@ -2093,9 +2102,85 @@ def render_simulation_tab(
 
     results_col, saved_col = st.columns([3, 2])
     with results_col:
-        metric_cols = st.columns(2)
-        metric_cols[0].metric("損益分岐点売上", f"{requirements['breakeven']:,.0f} 円")
-        metric_cols[1].metric("目標利益達成に必要な売上", f"{requirements['target_sales']:,.0f} 円")
+        progress_display = f"{progress_ratio:.1%}" if target_sales_value > 0 else "ー"
+        summary_card_html = f"""
+        <div style="border:1px solid #dee2e6;border-radius:0.75rem;padding:1.5rem;background-color:#ffffff;margin-bottom:1rem;">
+            <div style="font-size:0.9rem;color:#6c757d;">損益分岐点売上</div>
+            <div style="font-size:2.6rem;font-weight:600;line-height:1.1;">{breakeven_sales_value:,.0f}<span style="font-size:1.2rem;"> 円</span></div>
+            <div style="margin-top:1.2rem;display:flex;flex-wrap:wrap;gap:1.5rem;">
+                <div>
+                    <div style="font-size:0.85rem;color:#6c757d;">目標利益達成に必要な売上</div>
+                    <div style="font-size:1.2rem;font-weight:500;">{target_sales_value:,.0f} 円</div>
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:#6c757d;">現状売上</div>
+                    <div style="font-size:1.2rem;font-weight:500;">{current_sales_value:,.0f} 円</div>
+                </div>
+                <div>
+                    <div style="font-size:0.85rem;color:#6c757d;">目標達成率</div>
+                    <div style="font-size:1.2rem;font-weight:500;">{progress_display}</div>
+                </div>
+            </div>
+        </div>
+        """
+        st.markdown(summary_card_html, unsafe_allow_html=True)
+
+        success_color = "#2e7d32"
+        success_bg = "#d9f2e6"
+        error_color = "#c0392b"
+        error_bg = "#f8d7da"
+        neutral_bg = "#e9ecef"
+
+        gauge_config: Dict[str, object] = {
+            "axis": {"range": [0, gauge_max], "tickformat": ",.0f"},
+            "bar": {"color": success_color if reached_target else error_color},
+            "bgcolor": "#FFFFFF",
+        }
+        gauge_steps = []
+        if target_sales_value > 0:
+            gauge_steps.append(
+                {
+                    "range": [0, min(target_sales_value, gauge_max)],
+                    "color": success_bg if reached_target else error_bg,
+                }
+            )
+            if target_sales_value < gauge_max:
+                gauge_steps.append(
+                    {"range": [target_sales_value, gauge_max], "color": neutral_bg}
+                )
+            gauge_config["steps"] = gauge_steps
+            gauge_config["threshold"] = {
+                "line": {"color": success_color if reached_target else error_color, "width": 4},
+                "value": target_sales_value,
+            }
+
+        gauge_fig = go.Figure(
+            go.Indicator(
+                mode="gauge+number",
+                value=current_sales_value,
+                number={
+                    "valueformat": ",.0f",
+                    "suffix": " 円",
+                    "font": {"size": 28},
+                },
+                title={"text": "目標売上に対する現状売上（円）", "font": {"size": 16}},
+                gauge=gauge_config,
+            )
+        )
+        gauge_fig.update_layout(margin=dict(t=40, b=10, l=30, r=30), height=320)
+        st.plotly_chart(gauge_fig, use_container_width=True)
+
+        if target_sales_value > 0:
+            status_text = "達成" if reached_target else "未達"
+            st.caption(
+                f"バーは現状売上、ラインは目標売上を示します（単位: 円）。背景色は目標{status_text}の状態を表します。"
+            )
+        else:
+            st.caption(
+                "バーは現状売上を示します（単位: 円）。目標売上が未設定の場合はラインは表示されません。"
+            )
+
+        st.markdown("#### シナリオ詳細")
 
         default_name = st.session_state.get("simulation_scenario_name")
         if not default_name:

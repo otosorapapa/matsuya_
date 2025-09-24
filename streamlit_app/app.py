@@ -69,10 +69,14 @@ def _comparison_dataset(
         prev_end = filters.start_date - timedelta(days=1)
         prev_start = prev_end - timedelta(days=period_days - 1)
         comparison_filters = transformers.FilterState(
-            store=filters.store,
+            stores=list(filters.stores),
             start_date=prev_start,
             end_date=prev_end,
-            category=filters.category,
+            categories=list(filters.categories),
+            regions=list(filters.regions),
+            channels=list(filters.channels),
+            period_granularity=filters.period_granularity,
+            breakdown_dimension=filters.breakdown_dimension,
         )
         return transformers.apply_filters(df, comparison_filters)
     return df.head(0)

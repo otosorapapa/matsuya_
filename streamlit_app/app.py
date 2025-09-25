@@ -980,23 +980,24 @@ def _activate_inventory_focus(focus: str) -> None:
 
 
 def _render_analysis_navigation(active_label: str) -> str:
-    """Render the primary analysis navigation bar."""
+    """Render the analysis tab selector without duplicate navigation widgets."""
 
-    st.markdown("### 主要分析セクション")
-    tab_bar = st.container()
-    with tab_bar:
-        columns = st.columns(len(MAIN_TAB_LABELS))
-        for column, label in zip(columns, MAIN_TAB_LABELS):
-            button_type = "primary" if label == active_label else "secondary"
-            if column.button(
-                label,
-                use_container_width=True,
-                key=f"main-nav-{label}",
-                type=button_type,
-            ):
-                active_label = label
+    st.markdown("### 分析タブ")
+    active_index = (
+        MAIN_TAB_LABELS.index(active_label)
+        if active_label in MAIN_TAB_LABELS
+        else 0
+    )
+    selected_label = st.radio(
+        "分析を選択",
+        MAIN_TAB_LABELS,
+        index=active_index,
+        key="main_tab_selector",
+        horizontal=True,
+    )
+    st.session_state[MAIN_TAB_KEY] = selected_label
     st.divider()
-    return active_label
+    return selected_label
 
 
 def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
@@ -1442,51 +1443,6 @@ def render_dashboard_tab(
     cash_previous = _cash_flow_summary(comparison_sales, filtered_inventory)
     cash_target = sales_target * TARGET_CASH_RATIO
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "期間売上",
-                "value_text": _format_currency(total_sales),
-                "unit": "円",
-                "yoy": _compute_growth(total_sales, previous_sales),
-                "target_diff": total_sales - sales_target,
-                "action": {
-                    "key": "kpi-card-sales",
-                    "label": "売上分析を開く",
-                    "on_click": _activate_main_tab,
-                    "args": ("売上",),
-                },
-            },
-            {
-                "label": "営業利益",
-                "value_text": _format_currency(operating_profit),
-                "unit": "円",
-                "yoy": _compute_growth(operating_profit, previous_operating_profit),
-                "target_diff": operating_profit - profit_target,
-                "action": {
-                    "key": "kpi-card-profit",
-                    "label": "粗利タブを開く",
-                    "on_click": _activate_main_tab,
-                    "args": ("粗利",),
-                },
-            },
-            {
-                "label": "資金残高",
-                "value_text": _format_currency(cash_current["balance"]),
-                "unit": "円",
-                "yoy": _compute_growth(
-                    cash_current["balance"], cash_previous.get("balance")
-                ),
-                "target_diff": cash_current["balance"] - cash_target,
-                "action": {
-                    "key": "kpi-card-cash",
-                    "label": "資金タブを開く",
-                    "on_click": _activate_main_tab,
-                    "args": ("資金",),
-                },
-            },
-        ]
-    )
     overview_df = inventory.inventory_overview(
         sales_df,
         filtered_inventory,
@@ -1497,6 +1453,45 @@ def render_dashboard_tab(
         int((overview_df["stock_status"] == "在庫切れ").sum())
         if not overview_df.empty
         else 0
+    )
+    alert_settings = st.session_state.get("alert_settings", {})
+    stockout_threshold = _coerce_int(alert_settings.get("stockout_threshold"), 0)
+
+    _render_kpi_cards(
+        [
+            {
+                "label": "期間売上",
+                "value_text": _format_currency(total_sales),
+                "unit": "円",
+                "yoy": _compute_growth(total_sales, previous_sales),
+                "target_diff": total_sales - sales_target,
+            },
+            {
+                "label": "営業利益",
+                "value_text": _format_currency(operating_profit),
+                "unit": "円",
+                "yoy": _compute_growth(operating_profit, previous_operating_profit),
+                "target_diff": operating_profit - profit_target,
+            },
+            {
+                "label": "欠品品目数",
+                "value_text": _format_number(stockouts, "品目"),
+                "unit": "品目",
+                "yoy": None,
+                "target_diff": stockout_threshold - stockouts,
+                "alert": stockouts > stockout_threshold,
+            },
+            {
+                "label": "資金残高",
+                "value_text": _format_currency(cash_current["balance"]),
+                "unit": "円",
+                "yoy": _compute_growth(
+                    cash_current["balance"], cash_previous.get("balance")
+                ),
+                "target_diff": cash_current["balance"] - cash_target,
+                "alert": cash_current["balance"] < cash_target,
+            },
+        ]
     )
     negative_stores = (
         int((pnl_df["operating_profit"] < 0).sum())
@@ -1775,32 +1770,61 @@ def render_sales_tab(
             if not composition_df.empty:
                 composition_df = composition_df.sort_values(
                     ["period_start", "sales_amount"], ascending=[True, False]
-                )
+                ).copy()
                 totals = composition_df.groupby("period_key")["sales_amount"].transform(
                     "sum"
                 )
                 composition_df["share_ratio"] = (
                     composition_df["sales_amount"] / totals.replace(0, pd.NA)
                 ).fillna(0.0)
+                composition_df["channel_display"] = (
+                    composition_df["channel"].fillna("未分類")
+                )
                 channel_color_map = _categorical_color_map(
-                    composition_df["channel"].dropna().unique().tolist(),
+                    composition_df["channel_display"].unique().tolist(),
                     colors["primary"],
                 )
-                channel_composition_chart = px.bar(
-                    composition_df,
-                    x="period_label",
-                    y="sales_amount",
-                    color="channel",
-                    barnorm="fraction",
-                    labels={
-                        "period_label": "期間",
-                        "sales_amount": "構成比",
-                        "channel": "チャネル",
-                    },
-                    custom_data=["channel", "sales_amount", "share_ratio"],
-                    color_discrete_map=channel_color_map,
+                channel_composition_chart = go.Figure()
+                channel_order = (
+                    composition_df[["channel_display"]]
+                    .drop_duplicates()["channel_display"]
+                    .tolist()
                 )
+                for channel_name in channel_order:
+                    channel_data = composition_df[
+                        composition_df["channel_display"] == channel_name
+                    ]
+                    if channel_data.empty:
+                        continue
+                    custom_payload = [
+                        (
+                            channel_name,
+                            float(amount),
+                            float(ratio),
+                        )
+                        for amount, ratio in zip(
+                            channel_data["sales_amount"],
+                            channel_data["share_ratio"],
+                        )
+                    ]
+                    channel_composition_chart.add_trace(
+                        go.Bar(
+                            x=channel_data["period_label"],
+                            y=channel_data["share_ratio"],
+                            name=channel_name,
+                            marker_color=channel_color_map.get(
+                                channel_name, colors["primary"]
+                            ),
+                            customdata=custom_payload,
+                            hovertemplate=(
+                                "期間: %{x}<br>チャネル: %{customdata[0]}"
+                                "<br>構成比: %{customdata[2]:.1%}<br>売上: %{customdata[1]:,.0f} 円"
+                                "<extra></extra>"
+                            ),
+                        )
+                    )
                 channel_composition_chart.update_layout(
+                    barmode="stack",
                     yaxis=dict(title="構成比（%）", tickformat=".0%"),
                     xaxis=dict(title="期間"),
                     legend=dict(
@@ -1813,13 +1837,6 @@ def render_sales_tab(
                     ),
                     hovermode="x unified",
                 )
-                channel_composition_chart.update_traces(
-                    hovertemplate=(
-                        "期間: %{x}<br>チャネル: %{customdata[0]}"
-                        "<br>構成比: %{customdata[2]:.1%}<br>売上: %{customdata[1]:,.0f} 円"
-                        "<extra></extra>"
-                    )
-                )
                 channel_events = plotly_events(
                     channel_composition_chart,
                     click_event=True,
@@ -1828,19 +1845,15 @@ def render_sales_tab(
                     override_height=360,
                     key="sales_channel_events",
                 )
-                trace_names = [trace.name for trace in channel_composition_chart.data]
                 selected_set: set[str] = set()
                 for event in channel_events:
                     if not isinstance(event, dict):
                         continue
-                    curve_index = event.get("curveNumber")
-                    if not isinstance(curve_index, int):
+                    customdata = event.get("customdata")
+                    if not isinstance(customdata, (list, tuple)) or not customdata:
                         continue
-                    if curve_index < 0 or curve_index >= len(trace_names):
-                        continue
-                    trace_name = trace_names[curve_index]
-                    if trace_name and trace_name != "None":
-                        selected_set.add(trace_name)
+                    channel_name = str(customdata[0] or "未分類")
+                    selected_set.add(channel_name)
                 selected_channels = sorted(selected_set)
                 if selected_channels:
                     st.caption("選択中のチャネル: " + "、".join(selected_channels))
@@ -1854,7 +1867,7 @@ def render_sales_tab(
                     composition_table = composition_table.rename(
                         columns={
                             "period_label": "期間",
-                            "channel": "チャネル",
+                            "channel_display": "チャネル",
                             "sales_amount": "売上金額",
                         }
                     )
@@ -1879,8 +1892,13 @@ def render_sales_tab(
                 view_filters.period_granularity,
                 breakdown_column,
             )
-            if selected_channels and "チャネル" in detail_df.columns:
-                detail_df = detail_df[detail_df["チャネル"].isin(selected_channels)]
+            if selected_channels:
+                if "チャネル" in detail_df.columns:
+                    detail_df["チャネル"] = detail_df["チャネル"].fillna("未分類")
+                    detail_df = detail_df[detail_df["チャネル"].isin(selected_channels)]
+                elif "channel" in detail_df.columns:
+                    detail_df["channel"] = detail_df["channel"].fillna("未分類")
+                    detail_df = detail_df[detail_df["channel"].isin(selected_channels)]
         else:
             detail_columns = [
                 "date",
@@ -1894,6 +1912,7 @@ def render_sales_tab(
                 "sales_qty",
             ]
             detail_df = filtered_sales[detail_columns].copy()
+            detail_df["channel"] = detail_df["channel"].fillna("未分類")
             if selected_channels:
                 detail_df = detail_df[detail_df["channel"].isin(selected_channels)]
             detail_df = detail_df.sort_values("date", ascending=False)
@@ -1917,6 +1936,8 @@ def render_sales_tab(
             )
 
         export_df = detail_df
+        if "チャネル" in export_df.columns:
+            export_df["チャネル"] = export_df["チャネル"].fillna("未分類")
         download_cols = st.columns(2)
         with download_cols[0]:
             report.csv_download(
@@ -2791,11 +2812,15 @@ def render_inventory_tab(
     focus_labels = list(focus_map.keys())
     current_focus = state.get("focus", "all")
     focus_index = focus_values.index(current_focus) if current_focus in focus_values else 0
+    synced_label = focus_labels[focus_index]
+    if st.session_state.get("inventory_focus_overview") != synced_label:
+        st.session_state["inventory_focus_overview"] = synced_label
     focus_label = st.radio(
         "表示対象",
         focus_labels,
         index=focus_index,
         horizontal=True,
+        key="inventory_focus_overview",
     )
     state["focus"] = focus_map[focus_label]
 
@@ -3073,11 +3098,15 @@ def render_inventory_tab(
             if current_focus in focus_values
             else 0
         )
+        current_label = focus_labels[focus_index]
+        if st.session_state.get("inventory_focus_orders") != current_label:
+            st.session_state["inventory_focus_orders"] = current_label
         focus_label = st.radio(
             "表示対象",
             focus_labels,
             index=focus_index,
             horizontal=True,
+            key="inventory_focus_orders",
         )
         focus_value = focus_map[focus_label]
         state["focus"] = focus_value
@@ -3956,14 +3985,14 @@ def render_cash_tab(
 
         st.markdown("#### シナリオ詳細")
 
-        default_name = st.session_state.get("simulation_scenario_name")
-        if not default_name:
-            default_name = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
-            st.session_state["simulation_scenario_name"] = default_name
+        default_name = st.session_state.setdefault(
+            "simulation_scenario_name",
+            f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+        )
         scenario_name = st.text_input(
             "シナリオ名",
-            value=st.session_state["simulation_scenario_name"],
             key="simulation_scenario_name",
+            value=default_name,
         )
 
         if st.button("シナリオ保存", key="save_simulation_scenario"):
@@ -4060,6 +4089,44 @@ def main() -> None:
         dataset_status=dataset_status,
     )
 
+    if sidebar_state.get("show_data_spec_modal"):
+        with st.modal("データ仕様", key="data_spec_modal"):
+            st.markdown("### データ取り込みの前提")
+            st.write("API連携: 現在開発中です。CSVアップロードをご利用ください。")
+            st.markdown("#### サンプルCSV")
+            for dataset, path in sample_files.items():
+                file_path = Path(path)
+                if not file_path.exists():
+                    continue
+                with file_path.open("rb") as handle:
+                    data = handle.read()
+                label = sidebar.DATASET_LABELS.get(dataset, dataset)
+                st.download_button(
+                    f"{label}サンプルCSVをダウンロード",
+                    data=data,
+                    file_name=file_path.name,
+                    key=f"data-spec-sample-{dataset}",
+                )
+            st.markdown("#### 必須カラム")
+            spec_columns = sidebar_state.get("data_spec_columns", {})
+            for dataset, columns in spec_columns.items():
+                label = sidebar.DATASET_LABELS.get(dataset, dataset)
+                st.markdown(f"**{label}**")
+                for column, description in columns:
+                    st.markdown(f"- `{column}`: {description}")
+            st.markdown("#### CSVテンプレート")
+            for dataset, content in templates.items():
+                label = sidebar.DATASET_LABELS.get(dataset, dataset)
+                st.download_button(
+                    f"{label}テンプレートをダウンロード",
+                    data=content,
+                    file_name=f"{dataset}_template.csv",
+                    key=f"data-spec-template-{dataset}",
+                )
+            if st.button("閉じる", key="close_data_spec_modal"):
+                st.session_state["show_data_spec_modal"] = False
+                trigger_rerun()
+
     mode = sidebar_state["data_source_mode"]
     validation_results: Dict[str, data_loader.ValidationResult] = {}
     integration_result: Optional[IntegrationResult] = None
@@ -4145,17 +4212,6 @@ def main() -> None:
         active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
         if active_tab not in MAIN_TAB_LABELS:
             active_tab = MAIN_TAB_LABELS[0]
-
-        st.sidebar.subheader("主要分析セクション")
-        sidebar_tab = st.sidebar.radio(
-            "分析を選択",
-            MAIN_TAB_LABELS,
-            index=MAIN_TAB_LABELS.index(active_tab),
-            key="sidebar_analysis_selector",
-        )
-        if sidebar_tab != active_tab:
-            active_tab = sidebar_tab
-            st.session_state[MAIN_TAB_KEY] = active_tab
 
         header_container = st.container()
         with header_container:

@@ -38,7 +38,26 @@ def inventory_overview(
 
     working_sales = sales.copy()
     if "date" in working_sales.columns:
-        working_sales["date"] = pd.to_datetime(working_sales["date"])  # ensure tz aware
+        working_sales["date"] = pd.to_datetime(
+            working_sales["date"], errors="coerce"
+        )
+    else:
+        working_sales["date"] = pd.NaT
+
+    numeric_columns = ["sales_qty", "cogs_amount"]
+    for column in numeric_columns:
+        if column in working_sales.columns:
+            working_sales[column] = pd.to_numeric(
+                working_sales[column], errors="coerce"
+            ).fillna(0.0)
+        else:
+            working_sales[column] = 0.0
+
+    for column in ("store", "product"):
+        if column not in working_sales.columns:
+            working_sales[column] = None
+
+    working_sales = working_sales.dropna(subset=["date"]).copy()
 
     window = max(int(rolling_window), 1)
     buffer_days = max(int(safety_buffer_days), 0)

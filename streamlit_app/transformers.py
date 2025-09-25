@@ -166,8 +166,10 @@ def extract_channels(df: pd.DataFrame) -> List[str]:
 
 def compute_comparison_period(filters: FilterState) -> FilterState:
     """Return the comparison period (one year earlier) for YoY calculations."""
-    start_prev = filters.start_date.replace(year=filters.start_date.year - 1)
-    end_prev = filters.end_date.replace(year=filters.end_date.year - 1)
+    start_prev = (
+        pd.Timestamp(filters.start_date) - pd.DateOffset(years=1)
+    ).date()
+    end_prev = (pd.Timestamp(filters.end_date) - pd.DateOffset(years=1)).date()
     return FilterState(
         stores=list(filters.stores),
         start_date=start_prev,

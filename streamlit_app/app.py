@@ -2145,6 +2145,7 @@ def render_inventory_tab(
             index=store_choices.index(state.get("store", store_choices[0]))
             if state.get("store") in store_choices
             else 0,
+            key="inventory_store_select",
         )
         category_choice = col2.selectbox(
             "カテゴリ",
@@ -2152,6 +2153,7 @@ def render_inventory_tab(
             index=category_choices.index(state.get("category", category_choices[0]))
             if state.get("category") in category_choices
             else 0,
+            key="inventory_category_select",
         )
     state.update({"store": store_choice, "category": category_choice})
 

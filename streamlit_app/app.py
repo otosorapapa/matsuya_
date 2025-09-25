@@ -101,6 +101,16 @@ _DATASET_CONFIGS: Dict[str, Tuple[str, Callable[[Optional[object]], pd.DataFrame
     "fixed_costs": ("validate_fixed_costs_csv", data_loader.load_fixed_costs, "固定費"),
 }
 
+DATASET_LABEL_MAP: Dict[str, str] = {
+    name: label for name, (_, _, label) in _DATASET_CONFIGS.items()
+}
+DATASET_METADATA_KEY = "dataset_metadata"
+DATA_SOURCE_LABELS = {
+    "sample": "サンプルデータ",
+    "csv": "CSVアップロード",
+    "api": "API連携",
+}
+
 
 def _fallback_validator(
     loader: Callable[[Optional[object]], pd.DataFrame],
@@ -164,6 +174,22 @@ def _build_csv_validators() -> Dict[str, Callable[[Optional[object]], data_loade
 CSV_VALIDATORS = _build_csv_validators()
 
 
+def _coerce_datetime_column(
+    df: pd.DataFrame, column: str = "date"
+) -> Tuple[pd.DataFrame, int]:
+    """Ensure ``column`` is a datetime and drop invalid rows."""
+
+    if column not in df.columns:
+        return df.copy(), 0
+    dataset = df.copy()
+    coerced = pd.to_datetime(dataset[column], errors="coerce")
+    invalid = coerced.isna()
+    dataset.loc[:, column] = coerced
+    if invalid.any():
+        dataset = dataset.loc[~invalid].copy()
+    return dataset, int(invalid.sum())
+
+
 def _copy_datasets(datasets: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
     return {name: df.copy() for name, df in datasets.items()}
 
@@ -204,6 +230,119 @@ def _handle_csv_uploads(
     return datasets, validations
 
 
+def _ensure_dataset_metadata(
+    datasets: Dict[str, pd.DataFrame],
+    *,
+    default_source: str = "sample",
+) -> Dict[str, Dict[str, object]]:
+    """Synchronise dataset metadata stored in ``st.session_state``."""
+
+    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
+        DATASET_METADATA_KEY, {}
+    )
+    default_label = DATA_SOURCE_LABELS.get(default_source, default_source)
+    for name, df in datasets.items():
+        rows = int(len(df)) if df is not None else 0
+        record = dict(metadata.get(name, {}))
+        record.setdefault("label", DATASET_LABEL_MAP.get(name, name))
+        record.setdefault("source", default_source)
+        record.setdefault("source_label", default_label)
+        record.setdefault("updated_at", st.session_state.get("last_data_update"))
+        if record.get("status") != "error":
+            if rows:
+                record["status"] = "ready"
+                source_label = record.get("source_label") or default_label
+                record["message"] = f"{source_label} ({rows:,}行)"
+            else:
+                record["status"] = "missing"
+                record["message"] = "未アップロード"
+                record.pop("error", None)
+        record["rows"] = rows
+        metadata[name] = record
+    st.session_state[DATASET_METADATA_KEY] = metadata
+    return metadata
+
+
+def _update_metadata_from_uploads(
+    uploads: Dict[str, Optional[object]],
+    validations: Dict[str, data_loader.ValidationResult],
+) -> None:
+    """Store upload results for the sidebar status indicator."""
+
+    if not uploads:
+        return
+    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
+        DATASET_METADATA_KEY, {}
+    )
+    timestamp = datetime.now()
+    any_success = False
+    for dataset, upload in uploads.items():
+        if upload is None:
+            continue
+        validation = validations.get(dataset)
+        file_name = getattr(upload, "name", "uploaded_file")
+        rows = int(validation.total_rows) if validation is not None else 0
+        record = dict(metadata.get(dataset, {}))
+        record.update(
+            {
+                "label": DATASET_LABEL_MAP.get(dataset, dataset),
+                "source": "csv",
+                "source_label": file_name,
+                "rows": rows,
+                "updated_at": timestamp,
+            }
+        )
+        if validation is not None and validation.valid:
+            record["status"] = "ready"
+            record["message"] = f"{file_name} ({rows:,}行)"
+            record.pop("error", None)
+            any_success = True
+        else:
+            record["status"] = "error"
+            error_message = None
+            if validation is not None and validation.errors is not None and not validation.errors.empty:
+                error_message = str(validation.errors.iloc[0].get("内容", ""))
+            record["error"] = error_message or "CSVの形式を確認してください。"
+            record["message"] = record["error"]
+        metadata[dataset] = record
+    st.session_state[DATASET_METADATA_KEY] = metadata
+    if any_success:
+        st.session_state["last_data_update"] = timestamp
+        st.session_state["current_source"] = "csv"
+
+
+def _update_metadata_from_integration(result: Optional[IntegrationResult]) -> None:
+    """Update dataset metadata after API integrations."""
+
+    if result is None:
+        return
+    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
+        DATASET_METADATA_KEY, {}
+    )
+    timestamp = result.retrieved_at
+    for dataset, dataframe in result.datasets.items():
+        rows = int(len(dataframe)) if dataframe is not None else 0
+        record = dict(metadata.get(dataset, {}))
+        record.update(
+            {
+                "label": DATASET_LABEL_MAP.get(dataset, dataset),
+                "source": "api",
+                "source_label": result.provider,
+                "rows": rows,
+                "updated_at": timestamp,
+            }
+        )
+        if rows:
+            record["status"] = "ready"
+            record["message"] = f"{result.provider} ({rows:,}行)"
+            record.pop("error", None)
+        else:
+            record["status"] = "missing"
+            record["message"] = f"{result.provider} - データ未取得"
+        metadata[dataset] = record
+    st.session_state[DATASET_METADATA_KEY] = metadata
+    st.session_state["last_data_update"] = timestamp
+    st.session_state["current_source"] = "api"
 def _handle_api_mode(
     api_state: Dict[str, object],
     baseline: Dict[str, pd.DataFrame],
@@ -1019,6 +1158,7 @@ def render_dashboard_tab(
                 "target_diff": total_sales - sales_target,
                 "action": {
                     "key": "kpi-card-sales",
+                    "label": "売上分析を開く",
                     "on_click": _activate_main_tab,
                     "args": ("売上",),
                 },
@@ -1031,6 +1171,7 @@ def render_dashboard_tab(
                 "target_diff": operating_profit - profit_target,
                 "action": {
                     "key": "kpi-card-profit",
+                    "label": "粗利タブを開く",
                     "on_click": _activate_main_tab,
                     "args": ("粗利",),
                 },
@@ -1045,6 +1186,7 @@ def render_dashboard_tab(
                 "target_diff": cash_current["balance"] - cash_target,
                 "action": {
                     "key": "kpi-card-cash",
+                    "label": "資金タブを開く",
                     "on_click": _activate_main_tab,
                     "args": ("資金",),
                 },
@@ -1196,6 +1338,14 @@ def render_sales_tab(
         sales_df, view_filters, state["comparison"]
     )
 
+    filtered_sales, invalid_current = _coerce_datetime_column(filtered_sales)
+    comparison_sales, invalid_comparison = _coerce_datetime_column(
+        comparison_sales
+    )
+    invalid_rows = invalid_current + invalid_comparison
+    if invalid_rows:
+        st.warning(f"日付形式が不正なデータ{invalid_rows}件を除外しました。")
+
     if filtered_sales.empty:
         render_guided_message("empty")
         return
@@ -1258,174 +1408,181 @@ def render_sales_tab(
         view_filters.breakdown_dimension
     )
     breakdown_label = sales.breakdown_label(view_filters.breakdown_dimension)
-    timeseries_df = sales.timeseries_with_comparison(
-        filtered_sales,
-        comparison_sales,
-        view_filters.period_granularity,
-        breakdown_column,
-    )
-    custom_data_cols = ["period_key"]
-    if breakdown_column:
-        custom_data_cols.append(breakdown_column)
-    color_map: Dict[str, str] = {}
-    if breakdown_column:
-        color_map = _categorical_color_map(
-            timeseries_df[breakdown_column].dropna().unique().tolist(),
-            colors["primary"],
+    try:
+        timeseries_df = sales.timeseries_with_comparison(
+            filtered_sales,
+            comparison_sales,
+            view_filters.period_granularity,
+            breakdown_column,
         )
-    timeseries_chart = px.line(
-        timeseries_df,
-        x="period_label",
-        y="sales_amount",
-        color=breakdown_column if breakdown_column else None,
-        markers=True,
-        labels={"period_label": "期間", "sales_amount": "売上金額（円）"},
-        custom_data=custom_data_cols,
-        color_discrete_map=color_map if breakdown_column else None,
-    )
-    if not breakdown_column:
-        timeseries_chart.update_traces(line=dict(color=colors["primary"], width=3))
-    timeseries_chart.update_layout(
-        xaxis=dict(title="期間"),
-        hovermode="x unified",
-        yaxis=dict(title="売上金額（円）", tickformat=",.0f"),
-        legend=dict(
-            title=breakdown_label if breakdown_column else None,
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02,
-        ),
-    )
-    timeseries_chart.update_traces(
-        hovertemplate="期間: %{x}<br>売上: %{y:,.0f} 円<extra></extra>"
-    )
-    if timeseries_df["comparison_sales"].notna().any():
-        timeseries_chart.add_trace(
-            go.Scatter(
-                x=timeseries_df["period_label"],
-                y=timeseries_df["comparison_sales"],
-                name="前年同月",
-                mode="lines",
-                line=dict(color=colors["accent"], dash="dash"),
-                hovertemplate="<b>%{x}</b><br>前年同月: %{y:,.0f} 円<extra></extra>",
-            )
-        )
-
-    composition_df = sales.aggregate_timeseries(
-        filtered_sales,
-        view_filters.period_granularity,
-        "channel",
-    )
-    layout_cols = st.columns([3, 2], gap="large")
-    selected_channels: List[str] = []
-    trend_events: List[Dict[str, object]] = []
-
-    with layout_cols[0]:
-        st.subheader(f"売上推移（{breakdown_label}）")
-        st.caption("ドラッグで期間選択すると明細が自動で絞り込まれます。")
-        trend_events = plotly_events(
-            timeseries_chart,
-            select_event=True,
-            click_event=True,
-            override_width="100%",
-            override_height=420,
-            key="sales_trend_events",
-        )
-
-    with layout_cols[1]:
-        st.subheader("チャネル別構成比")
-        if not composition_df.empty:
-            composition_df = composition_df.sort_values(
-                ["period_start", "sales_amount"], ascending=[True, False]
-            )
-            totals = composition_df.groupby("period_key")["sales_amount"].transform("sum")
-            composition_df["share_ratio"] = (
-                composition_df["sales_amount"] / totals.replace(0, pd.NA)
-            ).fillna(0.0)
-            channel_color_map = _categorical_color_map(
-                composition_df["channel"].dropna().unique().tolist(),
+        custom_data_cols = ["period_key"]
+        if breakdown_column:
+            custom_data_cols.append(breakdown_column)
+        color_map: Dict[str, str] = {}
+        if breakdown_column:
+            color_map = _categorical_color_map(
+                timeseries_df[breakdown_column].dropna().unique().tolist(),
                 colors["primary"],
             )
-            channel_composition_chart = px.bar(
-                composition_df,
-                x="period_label",
-                y="sales_amount",
-                color="channel",
-                barnorm="fraction",
-                labels={
-                    "period_label": "期間",
-                    "sales_amount": "構成比",
-                    "channel": "チャネル",
-                },
-                custom_data=["channel", "sales_amount", "share_ratio"],
-                color_discrete_map=channel_color_map,
-            )
-            channel_composition_chart.update_layout(
-                yaxis=dict(title="構成比（%）", tickformat=".0%"),
-                xaxis=dict(title="期間"),
-                legend=dict(
-                    title="チャネル",
-                    orientation="v",
-                    yanchor="top",
-                    y=1,
-                    xanchor="left",
-                    x=1.02,
-                ),
-                hovermode="x unified",
-            )
-            channel_composition_chart.update_traces(
-                hovertemplate=(
-                    "期間: %{x}<br>チャネル: %{customdata[0]}"
-                    "<br>構成比: %{customdata[2]:.1%}<br>売上: %{customdata[1]:,.0f} 円"
-                    "<extra></extra>"
+        timeseries_chart = px.line(
+            timeseries_df,
+            x="period_label",
+            y="sales_amount",
+            color=breakdown_column if breakdown_column else None,
+            markers=True,
+            labels={"period_label": "期間", "sales_amount": "売上金額（円）"},
+            custom_data=custom_data_cols,
+            color_discrete_map=color_map if breakdown_column else None,
+        )
+        if not breakdown_column:
+            timeseries_chart.update_traces(line=dict(color=colors["primary"], width=3))
+        timeseries_chart.update_layout(
+            xaxis=dict(title="期間"),
+            hovermode="x unified",
+            yaxis=dict(title="売上金額（円）", tickformat=",.0f"),
+            legend=dict(
+                title=breakdown_label if breakdown_column else None,
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02,
+            ),
+        )
+        timeseries_chart.update_traces(
+            hovertemplate="期間: %{x}<br>売上: %{y:,.0f} 円<extra></extra>"
+        )
+        if timeseries_df["comparison_sales"].notna().any():
+            timeseries_chart.add_trace(
+                go.Scatter(
+                    x=timeseries_df["period_label"],
+                    y=timeseries_df["comparison_sales"],
+                    name="前年同月",
+                    mode="lines",
+                    line=dict(color=colors["accent"], dash="dash"),
+                    hovertemplate="<b>%{x}</b><br>前年同月: %{y:,.0f} 円<extra></extra>",
                 )
             )
-            channel_events = plotly_events(
-                channel_composition_chart,
-                click_event=True,
+
+        composition_df = sales.aggregate_timeseries(
+            filtered_sales,
+            view_filters.period_granularity,
+            "channel",
+        )
+        layout_cols = st.columns([3, 2], gap="large")
+        selected_channels: List[str] = []
+        trend_events: List[Dict[str, object]] = []
+
+        with layout_cols[0]:
+            st.subheader(f"売上推移（{breakdown_label}）")
+            st.caption("ドラッグで期間選択すると明細が自動で絞り込まれます。")
+            trend_events = plotly_events(
+                timeseries_chart,
                 select_event=True,
+                click_event=True,
                 override_width="100%",
-                override_height=360,
-                key="sales_channel_events",
+                override_height=420,
+                key="sales_trend_events",
             )
-            trace_names = [trace.name for trace in channel_composition_chart.data]
-            selected_set: set[str] = set()
-            for event in channel_events:
-                if not isinstance(event, dict):
-                    continue
-                curve_index = event.get("curveNumber")
-                if not isinstance(curve_index, int):
-                    continue
-                if curve_index < 0 or curve_index >= len(trace_names):
-                    continue
-                trace_name = trace_names[curve_index]
-                if trace_name and trace_name != "None":
-                    selected_set.add(trace_name)
-            selected_channels = sorted(selected_set)
-            if selected_channels:
-                st.caption("選択中のチャネル: " + "、".join(selected_channels))
-            else:
-                st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
-            with st.expander("チャネル別明細", expanded=False):
-                composition_table = composition_df.copy()
-                composition_table["構成比"] = composition_table["share_ratio"].map(
-                    lambda value: f"{value*100:.1f}%"
+
+        with layout_cols[1]:
+            st.subheader("チャネル別構成比")
+            if not composition_df.empty:
+                composition_df = composition_df.sort_values(
+                    ["period_start", "sales_amount"], ascending=[True, False]
                 )
-                composition_table = composition_table.rename(
-                    columns={
+                totals = composition_df.groupby("period_key")["sales_amount"].transform(
+                    "sum"
+                )
+                composition_df["share_ratio"] = (
+                    composition_df["sales_amount"] / totals.replace(0, pd.NA)
+                ).fillna(0.0)
+                channel_color_map = _categorical_color_map(
+                    composition_df["channel"].dropna().unique().tolist(),
+                    colors["primary"],
+                )
+                channel_composition_chart = px.bar(
+                    composition_df,
+                    x="period_label",
+                    y="sales_amount",
+                    color="channel",
+                    barnorm="fraction",
+                    labels={
                         "period_label": "期間",
+                        "sales_amount": "構成比",
                         "channel": "チャネル",
-                        "sales_amount": "売上金額",
-                    }
+                    },
+                    custom_data=["channel", "sales_amount", "share_ratio"],
+                    color_discrete_map=channel_color_map,
                 )
-                st.dataframe(
-                    composition_table[["期間", "チャネル", "売上金額", "構成比"]],
-                    use_container_width=True,
+                channel_composition_chart.update_layout(
+                    yaxis=dict(title="構成比（%）", tickformat=".0%"),
+                    xaxis=dict(title="期間"),
+                    legend=dict(
+                        title="チャネル",
+                        orientation="v",
+                        yanchor="top",
+                        y=1,
+                        xanchor="left",
+                        x=1.02,
+                    ),
+                    hovermode="x unified",
                 )
-        else:
-            st.caption("チャネル別の集計データがありません。")
+                channel_composition_chart.update_traces(
+                    hovertemplate=(
+                        "期間: %{x}<br>チャネル: %{customdata[0]}"
+                        "<br>構成比: %{customdata[2]:.1%}<br>売上: %{customdata[1]:,.0f} 円"
+                        "<extra></extra>"
+                    )
+                )
+                channel_events = plotly_events(
+                    channel_composition_chart,
+                    click_event=True,
+                    select_event=True,
+                    override_width="100%",
+                    override_height=360,
+                    key="sales_channel_events",
+                )
+                trace_names = [trace.name for trace in channel_composition_chart.data]
+                selected_set: set[str] = set()
+                for event in channel_events:
+                    if not isinstance(event, dict):
+                        continue
+                    curve_index = event.get("curveNumber")
+                    if not isinstance(curve_index, int):
+                        continue
+                    if curve_index < 0 or curve_index >= len(trace_names):
+                        continue
+                    trace_name = trace_names[curve_index]
+                    if trace_name and trace_name != "None":
+                        selected_set.add(trace_name)
+                selected_channels = sorted(selected_set)
+                if selected_channels:
+                    st.caption("選択中のチャネル: " + "、".join(selected_channels))
+                else:
+                    st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
+                with st.expander("チャネル別明細", expanded=False):
+                    composition_table = composition_df.copy()
+                    composition_table["構成比"] = composition_table["share_ratio"].map(
+                        lambda value: f"{value*100:.1f}%"
+                    )
+                    composition_table = composition_table.rename(
+                        columns={
+                            "period_label": "期間",
+                            "channel": "チャネル",
+                            "sales_amount": "売上金額",
+                        }
+                    )
+                    st.dataframe(
+                        composition_table[["期間", "チャネル", "売上金額", "構成比"]],
+                        use_container_width=True,
+                    )
+            else:
+                st.caption("チャネル別の集計データがありません。")
+    except Exception as exc:  # pragma: no cover - UI guard
+        logger.exception("Failed to render sales trend chart")
+        st.error(f"売上チャートの描画に失敗しました: {exc}")
+        return
 
     detail_expander = st.expander("売上明細と出力", expanded=False)
     with detail_expander:
@@ -2385,79 +2542,85 @@ def render_inventory_tab(
     )
 
     timeseries_df = _build_inventory_timeseries(working_sales, working_inventory)
-    st.subheader("在庫推移")
-    if not timeseries_df.empty:
-        inventory_trend = go.Figure()
-        inventory_trend.add_trace(
-            go.Scatter(
-                x=timeseries_df["date"],
-                y=timeseries_df["estimated_stock"],
-                mode="lines",
-                name="推定在庫",
-                line=dict(color=colors["primary"], width=2),
-                fill="tozeroy",
-                hovertemplate="日付: %{x|%Y-%m-%d}<br>推定在庫: %{y:,.0f} 個<extra></extra>",
-            )
+    heatmap_source = advice_df.pivot_table(
+        index="store", columns="category", values="estimated_stock", aggfunc="sum"
+    ).fillna(0)
+    heatmap = None
+    if not heatmap_source.empty:
+        heatmap = px.imshow(
+            heatmap_source,
+            color_continuous_scale="Blues",
+            labels={"color": "推定在庫（個）"},
+            aspect="auto",
         )
-        inventory_trend.add_trace(
-            go.Scatter(
-                x=timeseries_df["date"],
-                y=timeseries_df["safety_stock"],
-                mode="lines",
-                name="安全在庫ライン",
-                line=dict(color=colors["success"], dash="dash"),
-                hovertemplate="日付: %{x|%Y-%m-%d}<br>安全在庫: %{y:,.0f} 個<extra></extra>",
-            )
-        )
-        shortage_mask = (
-            timeseries_df["estimated_stock"] < timeseries_df["safety_stock"]
-        )
-        if shortage_mask.any():
+        heatmap.update_xaxes(title="カテゴリ")
+        heatmap.update_yaxes(title="店舗")
+        heatmap.update_layout(coloraxis_colorbar=dict(title="推定在庫（個）"))
+
+    analysis_tabs = st.tabs([
+        "在庫推移",
+        "カテゴリ別回転率",
+        "在庫ヒートマップ",
+        "発注リスト",
+    ])
+
+    with analysis_tabs[0]:
+        st.subheader("在庫推移")
+        if timeseries_df.empty:
+            st.info("在庫推移を表示できるデータが不足しています。")
+        else:
+            inventory_trend = go.Figure()
             inventory_trend.add_trace(
                 go.Scatter(
-                    x=timeseries_df.loc[shortage_mask, "date"],
-                    y=timeseries_df.loc[shortage_mask, "estimated_stock"],
-                    mode="markers",
-                    name="欠品リスク",
-                    marker=dict(color=colors["error"], size=8),
-                    hovertemplate="日付: %{x|%Y-%m-%d}<br>在庫: %{y:,.0f} 個<extra></extra>",
+                    x=timeseries_df["date"],
+                    y=timeseries_df["estimated_stock"],
+                    mode="lines",
+                    name="推定在庫",
+                    line=dict(color=colors["primary"], width=2),
+                    fill="tozeroy",
+                    hovertemplate="日付: %{x|%Y-%m-%d}<br>推定在庫: %{y:,.0f} 個<extra></extra>",
                 )
             )
-        inventory_trend.update_layout(
-            xaxis=dict(title="日付"),
-            yaxis=dict(title="数量（個）", tickformat=",.0f"),
-            hovermode="x unified",
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.02,
-            ),
-        )
-        st.caption("安全在庫を下回る日には赤色マーカーで表示します。")
-        st.plotly_chart(inventory_trend, use_container_width=True)
-    else:
-        st.info("在庫推移を表示できるデータが不足しています。")
+            inventory_trend.add_trace(
+                go.Scatter(
+                    x=timeseries_df["date"],
+                    y=timeseries_df["safety_stock"],
+                    mode="lines",
+                    name="安全在庫ライン",
+                    line=dict(color=colors["success"], dash="dash"),
+                    hovertemplate="日付: %{x|%Y-%m-%d}<br>安全在庫: %{y:,.0f} 個<extra></extra>",
+                )
+            )
+            shortage_mask = (
+                timeseries_df["estimated_stock"] < timeseries_df["safety_stock"]
+            )
+            if shortage_mask.any():
+                inventory_trend.add_trace(
+                    go.Scatter(
+                        x=timeseries_df.loc[shortage_mask, "date"],
+                        y=timeseries_df.loc[shortage_mask, "estimated_stock"],
+                        mode="markers",
+                        name="欠品リスク",
+                        marker=dict(color=colors["error"], size=8),
+                        hovertemplate="日付: %{x|%Y-%m-%d}<br>在庫: %{y:,.0f} 個<extra></extra>",
+                    )
+                )
+            inventory_trend.update_layout(
+                xaxis=dict(title="日付"),
+                yaxis=dict(title="数量（個）", tickformat=",.0f"),
+                hovermode="x unified",
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
+                ),
+            )
+            st.caption("安全在庫を下回る日には赤色マーカーで表示します。")
+            st.plotly_chart(inventory_trend, use_container_width=True)
 
-    focused_advice = advice_df.copy()
-    focus_mode = state.get("focus", "all")
-    if focus_mode == "stockout":
-        focused_advice = focused_advice[focused_advice["stock_status"] == "在庫切れ"]
-    elif focus_mode == "excess":
-        focused_advice = focused_advice[focused_advice["stock_status"] == "在庫過多"]
-
-    with st.expander(
-        "発注リスト・在庫推定表",
-        expanded=state.get("focus") == "stockout",
-    ):
-        if focused_advice.empty:
-            st.info("該当する在庫データがありません。")
-        else:
-            st.dataframe(focused_advice, use_container_width=True)
-
-    turnover_col, heatmap_col = st.columns(2)
-    with turnover_col:
+    with analysis_tabs[1]:
         st.subheader("カテゴリ別在庫回転率")
         if turnover_df.empty:
             st.info("在庫回転率を算出できるデータがありません。")
@@ -2486,27 +2649,45 @@ def render_inventory_tab(
             with st.expander("カテゴリ別在庫回転率表", expanded=False):
                 st.dataframe(turnover_plot_df, use_container_width=True)
 
-    heatmap_source = advice_df.pivot_table(
-        index="store", columns="category", values="estimated_stock", aggfunc="sum"
-    ).fillna(0)
-    if heatmap_source.empty:
-        heatmap = None
-    else:
-        heatmap = px.imshow(
-            heatmap_source,
-            color_continuous_scale="Blues",
-            labels={"color": "推定在庫（個）"},
-            aspect="auto",
-        )
-        heatmap.update_xaxes(title="カテゴリ")
-        heatmap.update_yaxes(title="店舗")
-        heatmap.update_layout(coloraxis_colorbar=dict(title="推定在庫（個）"))
-    with heatmap_col:
+    with analysis_tabs[2]:
         st.subheader("在庫ヒートマップ")
         if heatmap is None:
             st.info("在庫ヒートマップを描画するデータが不足しています。")
         else:
             st.plotly_chart(heatmap, use_container_width=True)
+
+    with analysis_tabs[3]:
+        st.subheader("発注リスト・在庫推定")
+        focus_map = {"全件": "all", "欠品のみ": "stockout", "過剰のみ": "excess"}
+        focus_labels = list(focus_map.keys())
+        focus_values = list(focus_map.values())
+        current_focus = state.get("focus", "all")
+        focus_index = (
+            focus_values.index(current_focus)
+            if current_focus in focus_values
+            else 0
+        )
+        focus_label = st.radio(
+            "表示対象",
+            focus_labels,
+            index=focus_index,
+            horizontal=True,
+        )
+        focus_value = focus_map[focus_label]
+        state["focus"] = focus_value
+        focused_advice = advice_df.copy()
+        if focus_value == "stockout":
+            focused_advice = focused_advice[
+                focused_advice["stock_status"] == "在庫切れ"
+            ]
+        elif focus_value == "excess":
+            focused_advice = focused_advice[
+                focused_advice["stock_status"] == "在庫過多"
+            ]
+        if focused_advice.empty:
+            st.info("該当する在庫データがありません。")
+        else:
+            st.dataframe(focused_advice, use_container_width=True)
 
 
 def render_data_management_tab(
@@ -2596,6 +2777,8 @@ def render_data_management_tab(
             st.session_state["data_tab_validations"] = validations
             st.session_state["current_source"] = "csv"
             st.session_state["last_data_update"] = datetime.now()
+            _update_metadata_from_uploads(mapping, validations)
+            _ensure_dataset_metadata(new_datasets, default_source="csv")
             st.success("アップロードを反映しました。")
             trigger_rerun()
 
@@ -3259,6 +3442,10 @@ def main() -> None:
     regions = transformers.extract_regions(active_datasets["sales"])
     channels = transformers.extract_channels(active_datasets["sales"])
     provider_options = available_providers()
+    current_source = st.session_state.get("current_source", "sample")
+    dataset_status = _ensure_dataset_metadata(
+        active_datasets, default_source=current_source
+    )
 
     sidebar_state = sidebar.render_sidebar(
         stores,
@@ -3270,6 +3457,7 @@ def main() -> None:
         templates=templates,
         providers=provider_options,
         show_filters=False,
+        dataset_status=dataset_status,
     )
 
     mode = sidebar_state["data_source_mode"]
@@ -3281,11 +3469,13 @@ def main() -> None:
             sidebar_state["uploads"],
             baseline,
         )
+        _update_metadata_from_uploads(sidebar_state["uploads"], validation_results)
     elif mode == "api":
         datasets, integration_result = _handle_api_mode(
             sidebar_state["api"],
             baseline,
         )
+        _update_metadata_from_integration(integration_result)
     else:
         datasets = active_datasets
 
@@ -3300,9 +3490,29 @@ def main() -> None:
         datasets.setdefault(key, default_df.copy())
 
     datasets["sales"] = transformers.prepare_sales_dataset(datasets["sales"])
-
+    
     st.session_state["current_datasets"] = _copy_datasets(datasets)
-    st.session_state["current_source"] = mode
+
+    if mode == "csv":
+        uploaded_keys = {
+            key
+            for key, upload in sidebar_state["uploads"].items()
+            if upload is not None
+        }
+        if uploaded_keys and any(
+            validation_results.get(key) and validation_results[key].valid
+            for key in uploaded_keys
+        ):
+            st.session_state["current_source"] = "csv"
+    elif mode == "api" and integration_result is not None:
+        st.session_state["current_source"] = "api"
+    else:
+        st.session_state.setdefault("current_source", current_source)
+
+    _ensure_dataset_metadata(
+        st.session_state["current_datasets"],
+        default_source=st.session_state.get("current_source", "sample"),
+    )
 
     stores = transformers.extract_stores(datasets["sales"])
     categories = transformers.extract_categories(datasets["sales"])

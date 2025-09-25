@@ -8,6 +8,8 @@ from uuid import uuid4
 import pandas as pd
 import streamlit as st
 
+from streamlit_app import rerun as trigger_rerun
+
 from streamlit_app.integrations import IntegrationResult
 
 
@@ -205,7 +207,7 @@ def render_dashboard(
     if st.button("選択した履歴を削除", key=f"delete-{selected_id}"):
         delete_import(selected_id)
         st.success("履歴を削除しました。画面を更新します。")
-        st.experimental_rerun()
+        trigger_rerun()
 
 
 def _format_option(history_df: pd.DataFrame, record_id: str) -> str:

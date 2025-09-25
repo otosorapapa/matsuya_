@@ -19,7 +19,7 @@ ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from streamlit_app import data_loader, transformers
+from streamlit_app import data_loader, rerun as trigger_rerun, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation
 from streamlit_app.components import import_dashboard, report, sidebar
 from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
@@ -697,7 +697,7 @@ def _compute_growth(current: float, previous: Optional[float]) -> Optional[float
 
 def _activate_main_tab(tab_name: str) -> None:
     st.session_state[MAIN_TAB_KEY] = tab_name
-    st.experimental_rerun()
+    trigger_rerun()
 
 
 def _render_analysis_navigation(active_label: str) -> str:
@@ -2419,7 +2419,7 @@ def render_data_management_tab(
             st.session_state["current_source"] = "csv"
             st.session_state["last_data_update"] = datetime.now()
             st.success("アップロードを反映しました。")
-            st.experimental_rerun()
+            trigger_rerun()
 
     with st.expander("テンプレートをダウンロード", expanded=False):
         for key, content in templates.items():
@@ -3024,7 +3024,7 @@ def render_cash_tab(
                 st.session_state["simulation_fixed_slider"] = st.session_state["simulation_fixed_cost"]
                 st.session_state["simulation_fixed_input"] = st.session_state["simulation_fixed_cost"]
                 st.session_state["simulation_target_input"] = st.session_state["simulation_target_value"]
-                st.experimental_rerun()
+                trigger_rerun()
 
             scenarios_df = pd.DataFrame(saved_scenarios)
             st.dataframe(scenarios_df, use_container_width=True)

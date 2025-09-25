@@ -334,10 +334,22 @@ def _adjust_hex_color(hex_color: str, factor: float) -> str:
     return f"#{nr:02X}{ng:02X}{nb:02X}"
 
 
+def _get_theme_config() -> Dict[str, str]:
+    """Return the current Streamlit theme configuration if available."""
+
+    try:
+        theme = st.get_option("theme")
+    except RuntimeError:
+        return {}
+    if not isinstance(theme, dict):
+        return {}
+    return theme
+
+
 def _cost_color_mapping(cost_columns: Sequence[str]) -> Tuple[Dict[str, str], str]:
     """Return a mapping of cost columns to theme accent-based colors."""
 
-    theme = st.get_option("theme") or {}
+    theme = _get_theme_config()
     accent = _sanitize_hex_color(theme.get("accentColor"), DEFAULT_ACCENT_COLOR)
     palette = [_adjust_hex_color(accent, factor) for factor in _COST_COLOR_FACTORS]
     mapping = {col: palette[idx % len(palette)] for idx, col in enumerate(cost_columns)}
@@ -347,7 +359,7 @@ def _cost_color_mapping(cost_columns: Sequence[str]) -> Tuple[Dict[str, str], st
 def _resolve_theme_colors() -> Dict[str, str]:
     """Fetch commonly used theme colors with sensible fallbacks."""
 
-    theme = st.get_option("theme") or {}
+    theme = _get_theme_config()
     primary = _sanitize_hex_color(theme.get("primaryColor"), DEFAULT_PRIMARY_COLOR)
     accent = _sanitize_hex_color(theme.get("accentColor"), DEFAULT_ACCENT_COLOR)
     success = _sanitize_hex_color(theme.get("successColor"), DEFAULT_SUCCESS_COLOR)

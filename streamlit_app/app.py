@@ -387,6 +387,20 @@ def _resolve_theme_colors() -> Dict[str, str]:
     }
 
 
+def _categorical_color_map(keys: Sequence[str], base_color: str) -> Dict[str, str]:
+    """Generate a perceptually ordered color map for categorical values."""
+
+    factors = [-0.35, -0.2, -0.05, 0.1, 0.25, 0.4, 0.55, 0.7]
+    unique_keys = [key for key in keys if key is not None]
+    if not unique_keys:
+        return {}
+    palette = [
+        _adjust_hex_color(base_color, factors[idx % len(factors)])
+        for idx in range(len(unique_keys))
+    ]
+    return {key: palette[idx] for idx, key in enumerate(unique_keys)}
+
+
 def _resolve_target_fixed_cost() -> Optional[float]:
     """Return a user defined fixed cost target when available."""
 
@@ -1253,6 +1267,12 @@ def render_sales_tab(
     custom_data_cols = ["period_key"]
     if breakdown_column:
         custom_data_cols.append(breakdown_column)
+    color_map: Dict[str, str] = {}
+    if breakdown_column:
+        color_map = _categorical_color_map(
+            timeseries_df[breakdown_column].dropna().unique().tolist(),
+            colors["primary"],
+        )
     timeseries_chart = px.line(
         timeseries_df,
         x="period_label",
@@ -1261,21 +1281,25 @@ def render_sales_tab(
         markers=True,
         labels={"period_label": "期間", "sales_amount": "売上金額（円）"},
         custom_data=custom_data_cols,
+        color_discrete_map=color_map if breakdown_column else None,
     )
     if not breakdown_column:
         timeseries_chart.update_traces(line=dict(color=colors["primary"], width=3))
     timeseries_chart.update_layout(
-        yaxis=dict(title="売上金額（円）"),
         xaxis=dict(title="期間"),
         hovermode="x unified",
+        yaxis=dict(title="売上金額（円）", tickformat=",.0f"),
         legend=dict(
             title=breakdown_label if breakdown_column else None,
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
         ),
+    )
+    timeseries_chart.update_traces(
+        hovertemplate="期間: %{x}<br>売上: %{y:,.0f} 円<extra></extra>"
     )
     if timeseries_df["comparison_sales"].notna().any():
         timeseries_chart.add_trace(
@@ -1283,14 +1307,16 @@ def render_sales_tab(
                 x=timeseries_df["period_label"],
                 y=timeseries_df["comparison_sales"],
                 name="前年同月",
-                mode="lines+markers",
+                mode="lines",
                 line=dict(color=colors["accent"], dash="dash"),
                 hovertemplate="<b>%{x}</b><br>前年同月: %{y:,.0f} 円<extra></extra>",
             )
         )
 
-    composition_df = (
-        filtered_sales.groupby("channel")["sales_amount"].sum().reset_index()
+    composition_df = sales.aggregate_timeseries(
+        filtered_sales,
+        view_filters.period_granularity,
+        "channel",
     )
     layout_cols = st.columns([3, 2], gap="large")
     selected_channels: List[str] = []
@@ -1312,29 +1338,49 @@ def render_sales_tab(
         st.subheader("チャネル別構成比")
         if not composition_df.empty:
             composition_df = composition_df.sort_values(
-                "sales_amount", ascending=False
+                ["period_start", "sales_amount"], ascending=[True, False]
             )
-            composition_df["構成比"] = (
-                composition_df["sales_amount"] / composition_df["sales_amount"].sum()
-            )
-            plot_df = composition_df.assign(
-                share_percentage=lambda df: df["構成比"] * 100
+            totals = composition_df.groupby("period_key")["sales_amount"].transform("sum")
+            composition_df["share_ratio"] = (
+                composition_df["sales_amount"] / totals.replace(0, pd.NA)
+            ).fillna(0.0)
+            channel_color_map = _categorical_color_map(
+                composition_df["channel"].dropna().unique().tolist(),
+                colors["primary"],
             )
             channel_composition_chart = px.bar(
-                plot_df,
-                x="sales_amount",
-                y="channel",
-                orientation="h",
-                labels={"sales_amount": "売上金額（円）", "channel": "チャネル"},
-                color_discrete_sequence=[colors["primary"]],
-                custom_data=["share_percentage", "channel"],
+                composition_df,
+                x="period_label",
+                y="sales_amount",
+                color="channel",
+                barnorm="fraction",
+                labels={
+                    "period_label": "期間",
+                    "sales_amount": "構成比",
+                    "channel": "チャネル",
+                },
+                custom_data=["channel", "sales_amount", "share_ratio"],
+                color_discrete_map=channel_color_map,
             )
             channel_composition_chart.update_layout(
-                xaxis_title="売上金額（円）",
-                yaxis_title="チャネル",
+                yaxis=dict(title="構成比（%）", tickformat=".0%"),
+                xaxis=dict(title="期間"),
+                legend=dict(
+                    title="チャネル",
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
+                ),
+                hovermode="x unified",
             )
             channel_composition_chart.update_traces(
-                hovertemplate="<b>%{y}</b><br>売上金額: %{x:,.0f} 円<br>構成比: %{customdata[0]:.1f}%<extra></extra>"
+                hovertemplate=(
+                    "期間: %{x}<br>チャネル: %{customdata[0]}"
+                    "<br>構成比: %{customdata[2]:.1%}<br>売上: %{customdata[1]:,.0f} 円"
+                    "<extra></extra>"
+                )
             )
             channel_events = plotly_events(
                 channel_composition_chart,
@@ -1344,26 +1390,38 @@ def render_sales_tab(
                 override_height=360,
                 key="sales_channel_events",
             )
-            selected_channels = sorted(
-                {
-                    event.get("y")
-                    for event in channel_events
-                    if isinstance(event, dict) and event.get("y")
-                }
-            )
+            trace_names = [trace.name for trace in channel_composition_chart.data]
+            selected_set: set[str] = set()
+            for event in channel_events:
+                if not isinstance(event, dict):
+                    continue
+                curve_index = event.get("curveNumber")
+                if not isinstance(curve_index, int):
+                    continue
+                if curve_index < 0 or curve_index >= len(trace_names):
+                    continue
+                trace_name = trace_names[curve_index]
+                if trace_name and trace_name != "None":
+                    selected_set.add(trace_name)
+            selected_channels = sorted(selected_set)
             if selected_channels:
                 st.caption("選択中のチャネル: " + "、".join(selected_channels))
             else:
                 st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
             with st.expander("チャネル別明細", expanded=False):
+                composition_table = composition_df.copy()
+                composition_table["構成比"] = composition_table["share_ratio"].map(
+                    lambda value: f"{value*100:.1f}%"
+                )
+                composition_table = composition_table.rename(
+                    columns={
+                        "period_label": "期間",
+                        "channel": "チャネル",
+                        "sales_amount": "売上金額",
+                    }
+                )
                 st.dataframe(
-                    composition_df.rename(
-                        columns={"channel": "チャネル", "sales_amount": "売上金額"}
-                    ).assign(
-                        構成比=lambda df: df["構成比"].map(
-                            lambda v: f"{v*100:.1f}%"
-                        )
-                    ),
+                    composition_table[["期間", "チャネル", "売上金額", "構成比"]],
                     use_container_width=True,
                 )
         else:
@@ -1614,18 +1672,18 @@ def render_products_tab(
 
     pareto_chart.update_layout(
         xaxis=dict(title="商品"),
-        yaxis=dict(title="売上金額（円）"),
+        yaxis=dict(title="売上金額（円）", tickformat=",.0f"),
         yaxis2=dict(
             title="累積構成比（％）",
             overlaying="y",
             side="right",
         ),
         legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
         ),
         hovermode="x unified",
     )
@@ -1898,14 +1956,14 @@ def render_profitability_tab(
     comparison_fig.update_layout(
         barmode="group",
         yaxis=dict(autorange="reversed", title="店舗"),
-        xaxis=dict(title="金額（円）"),
+        xaxis=dict(title="金額（円）", tickformat=",.0f"),
         legend=dict(
             title="指標",
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
         ),
     )
 
@@ -1959,14 +2017,14 @@ def render_profitability_tab(
                 )
         profit_trend_fig.update_layout(
             xaxis=dict(title="期間"),
-            yaxis=dict(title="金額（円）"),
+            yaxis=dict(title="金額（円）", tickformat=",.0f"),
             hovermode="x unified",
             legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02,
             ),
         )
 
@@ -2077,14 +2135,14 @@ def render_profitability_tab(
     cost_chart.update_layout(
         barmode="stack",
         xaxis=dict(title=xaxis_title),
-        yaxis=dict(title="金額（円）"),
+        yaxis=dict(title="金額（円）", tickformat=",.0f"),
         legend=dict(
             title=dict(text="費目"),
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
+            orientation="v",
+            yanchor="top",
+            y=1,
+            xanchor="left",
+            x=1.02,
         ),
         hovermode="x unified",
     )
@@ -2367,8 +2425,15 @@ def render_inventory_tab(
             )
         inventory_trend.update_layout(
             xaxis=dict(title="日付"),
-            yaxis=dict(title="数量（個）"),
+            yaxis=dict(title="数量（個）", tickformat=",.0f"),
             hovermode="x unified",
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02,
+            ),
         )
         st.caption("安全在庫を下回る日には赤色マーカーで表示します。")
         st.plotly_chart(inventory_trend, use_container_width=True)
@@ -2394,24 +2459,54 @@ def render_inventory_tab(
     turnover_col, heatmap_col = st.columns(2)
     with turnover_col:
         st.subheader("カテゴリ別在庫回転率")
-        st.dataframe(turnover_df, use_container_width=True)
+        if turnover_df.empty:
+            st.info("在庫回転率を算出できるデータがありません。")
+        else:
+            turnover_plot_df = turnover_df.sort_values(
+                "turnover", ascending=False
+            ).reset_index(drop=True)
+            bar_colors = [
+                colors["error"] if value < 0 else colors["primary"]
+                for value in turnover_plot_df["turnover"].astype(float).tolist()
+            ]
+            turnover_chart = go.Figure(
+                go.Bar(
+                    x=turnover_plot_df["category"].astype(str).tolist(),
+                    y=turnover_plot_df["turnover"].astype(float).tolist(),
+                    marker_color=bar_colors,
+                    hovertemplate="カテゴリ: %{x}<br>在庫回転率: %{y:.1f} 回<extra></extra>",
+                )
+            )
+            turnover_chart.update_layout(
+                xaxis=dict(title="カテゴリ"),
+                yaxis=dict(title="在庫回転率（回）", tickformat=".1f"),
+                showlegend=False,
+            )
+            st.plotly_chart(turnover_chart, use_container_width=True)
+            with st.expander("カテゴリ別在庫回転率表", expanded=False):
+                st.dataframe(turnover_plot_df, use_container_width=True)
 
-    heatmap = px.density_heatmap(
-        advice_df,
-        x="category",
-        y="store",
-        z="estimated_stock",
-        color_continuous_scale="Blues",
-        labels={"estimated_stock": "推定在庫（個）", "category": "カテゴリ", "store": "店舗"},
-    )
-    heatmap.update_layout(
-        xaxis_title="カテゴリ",
-        yaxis_title="店舗",
-        coloraxis_colorbar=dict(title="推定在庫（個）"),
-    )
+    heatmap_source = advice_df.pivot_table(
+        index="store", columns="category", values="estimated_stock", aggfunc="sum"
+    ).fillna(0)
+    if heatmap_source.empty:
+        heatmap = None
+    else:
+        heatmap = px.imshow(
+            heatmap_source,
+            color_continuous_scale="Blues",
+            labels={"color": "推定在庫（個）"},
+            aspect="auto",
+        )
+        heatmap.update_xaxes(title="カテゴリ")
+        heatmap.update_yaxes(title="店舗")
+        heatmap.update_layout(coloraxis_colorbar=dict(title="推定在庫（個）"))
     with heatmap_col:
         st.subheader("在庫ヒートマップ")
-        st.plotly_chart(heatmap, use_container_width=True)
+        if heatmap is None:
+            st.info("在庫ヒートマップを描画するデータが不足しています。")
+        else:
+            st.plotly_chart(heatmap, use_container_width=True)
 
 
 def render_data_management_tab(
@@ -2726,14 +2821,14 @@ def render_cash_tab(
             )
         cash_chart.update_layout(
             xaxis=dict(title="期間", type="date", tickformat=tick_format),
-            yaxis=dict(title="金額（円）"),
+            yaxis=dict(title="金額（円）", tickformat=",.0f"),
             hovermode="x unified",
             legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1,
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02,
             ),
         )
         st.plotly_chart(cash_chart, use_container_width=True)
@@ -2793,13 +2888,13 @@ def render_cash_tab(
                 )
             area_fig.update_layout(
                 xaxis=dict(title="期間", type="date", tickformat=tick_format),
-                yaxis=dict(title="金額（円）"),
+                yaxis=dict(title="金額（円）", tickformat=",.0f"),
                 legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1,
+                    orientation="v",
+                    yanchor="top",
+                    y=1,
+                    xanchor="left",
+                    x=1.02,
                 ),
                 hovermode="x unified",
             )
@@ -2977,8 +3072,25 @@ def render_cash_tab(
         curve,
         x="gross_margin",
         y="breakeven_sales",
-        labels={"gross_margin": "粗利率", "breakeven_sales": "損益分岐点売上"},
+        labels={"gross_margin": "粗利率", "breakeven_sales": "損益分岐点売上高（円）"},
     )
+    curve_chart.update_traces(
+        hovertemplate="粗利率: %{x:.0%}<br>損益分岐点売上高: %{y:,.0f} 円<extra></extra>",
+    )
+    curve_chart.update_layout(
+        xaxis=dict(title="粗利率", tickformat=".0%"),
+        yaxis=dict(title="損益分岐点売上高（円）", tickformat=",.0f"),
+        showlegend=False,
+    )
+    if gross_margin is not None:
+        curve_chart.add_vline(
+            x=gross_margin,
+            line_dash="dash",
+            line_color=colors["error"],
+            annotation_text="目標粗利率",
+            annotation_position="top right",
+            annotation=dict(font=dict(color=colors["error"])),
+        )
     st.plotly_chart(curve_chart, use_container_width=True)
 
     results_col, saved_col = st.columns([3, 2])

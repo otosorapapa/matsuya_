@@ -514,6 +514,7 @@ def _resolve_theme_colors() -> Dict[str, str]:
     accent = _sanitize_hex_color(theme.get("accentColor"), DEFAULT_ACCENT_COLOR)
     success = _sanitize_hex_color(theme.get("successColor"), DEFAULT_SUCCESS_COLOR)
     error = _sanitize_hex_color(theme.get("errorColor"), DEFAULT_ERROR_COLOR)
+    warning = _sanitize_hex_color(theme.get("warningColor"), "#F59E0B")
     neutral = _sanitize_hex_color(theme.get("secondaryBackgroundColor"), "#F1F5F9")
     text = _sanitize_hex_color(theme.get("textColor"), "#0F172A")
     return {
@@ -521,6 +522,7 @@ def _resolve_theme_colors() -> Dict[str, str]:
         "accent": accent,
         "success": success,
         "error": error,
+        "warning": warning,
         "neutral": neutral,
         "text": text,
     }
@@ -720,6 +722,14 @@ def _inject_global_styles() -> None:
             font-weight: 600;
             color: {colors['text']};
         }}
+        .kpi-card .sub-value {{
+            font-size: 0.85rem;
+            color: #4b5563;
+            margin-top: 0.2rem;
+        }}
+        .kpi-card .sub-value.muted {{
+            color: #9ca3af;
+        }}
         .kpi-card .delta {{
             font-size: 0.9rem;
             font-weight: 500;
@@ -783,6 +793,55 @@ def _inject_global_styles() -> None:
             background: { _adjust_hex_color(colors['success'], 0.75) };
             border-color: { _adjust_hex_color(colors['success'], 0.4) };
             color: {colors['success']};
+        }}
+        .alert-banner {{
+            background: { _adjust_hex_color(colors['warning'], 0.7) };
+            border: 1px solid { _adjust_hex_color(colors['warning'], 0.3) };
+            border-radius: 12px;
+            padding: 0.9rem 1rem;
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            color: #8a5800;
+        }}
+        .alert-banner.success {{
+            background: { _adjust_hex_color(colors['success'], 0.75) };
+            border-color: { _adjust_hex_color(colors['success'], 0.4) };
+            color: {colors['success']};
+        }}
+        .alert-banner__header {{
+            font-weight: 600;
+        }}
+        .alert-card {{
+            background: #ffffff;
+            border-radius: 10px;
+            padding: 1rem;
+            box-shadow: 0 4px 12px rgba(11, 31, 59, 0.08);
+            border-left: 4px solid {colors['primary']};
+            min-height: 150px;
+        }}
+        .alert-card.high {{
+            border-left-color: {colors['error']};
+        }}
+        .alert-card.medium {{
+            border-left-color: {colors['warning']};
+        }}
+        .alert-card__title {{
+            font-weight: 600;
+            color: {colors['primary']};
+            margin-bottom: 0.3rem;
+        }}
+        .alert-card__count {{
+            font-size: 1.4rem;
+            font-weight: 600;
+            color: {colors['text']};
+        }}
+        .alert-card__message {{
+            font-size: 0.9rem;
+            color: #475569;
+            margin-top: 0.4rem;
         }}
         .filter-bar {{
             background: {colors['neutral']};
@@ -880,6 +939,13 @@ def _compute_growth(current: float, previous: Optional[float]) -> Optional[float
 
 def _activate_main_tab(tab_name: str) -> None:
     st.session_state[MAIN_TAB_KEY] = tab_name
+    trigger_rerun()
+
+
+def _activate_inventory_focus(focus: str) -> None:
+    tab_state = st.session_state.setdefault("inventory_tab_state", {})
+    tab_state["focus"] = focus
+    st.session_state[MAIN_TAB_KEY] = "在庫"
     trigger_rerun()
 
 
@@ -1011,6 +1077,204 @@ def _cash_flow_summary(sales_df: pd.DataFrame, inventory_df: pd.DataFrame) -> Di
         "balance": balance,
     }
 
+
+def _collect_alerts(
+    datasets: Dict[str, pd.DataFrame],
+    alert_settings: Optional[Dict[str, object]],
+    default_period: Tuple[date, date],
+) -> List[Dict[str, object]]:
+    settings = alert_settings or {}
+    stockout_threshold = int(settings.get("stockout_threshold", 0))
+    excess_threshold = int(settings.get("excess_threshold", 0))
+    deficit_threshold = settings.get("deficit_threshold")
+
+    sales_df = datasets.get("sales", pd.DataFrame())
+    inventory_df = datasets.get("inventory", pd.DataFrame())
+    fixed_costs_df = datasets.get("fixed_costs", pd.DataFrame())
+
+    start_date, end_date = default_period
+    alerts: List[Dict[str, object]] = []
+
+    overview_df = inventory.inventory_overview(
+        sales_df,
+        inventory_df,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    if not overview_df.empty:
+        stockouts = int((overview_df["stock_status"] == "在庫切れ").sum())
+        excess = int((overview_df["stock_status"] == "在庫過多").sum())
+        if stockouts > stockout_threshold:
+            alerts.append(
+                {
+                    "title": "欠品アラート",
+                    "count": stockouts,
+                    "message": f"安全在庫を下回る商品が{stockouts}品目あります。",
+                    "action": {
+                        "label": "在庫タブで確認",
+                        "callback": _activate_inventory_focus,
+                        "args": ("stockout",),
+                    },
+                    "severity": "high",
+                }
+            )
+        if excess > excess_threshold:
+            alerts.append(
+                {
+                    "title": "過剰在庫アラート",
+                    "count": excess,
+                    "message": f"在庫過多の対象が{excess}品目あります。販促や発注調整を検討してください。",
+                    "action": {
+                        "label": "在庫タブへ",
+                        "callback": _activate_inventory_focus,
+                        "args": ("excess",),
+                    },
+                    "severity": "medium",
+                }
+            )
+
+    pnl_df = profitability.store_profitability(sales_df, fixed_costs_df)
+    if not pnl_df.empty:
+        operating_profit_total = float(
+            pnl_df.get("operating_profit", pd.Series(dtype=float)).sum()
+        )
+        loss_stores = int(
+            (pnl_df.get("operating_profit", pd.Series(dtype=float)) < 0).sum()
+        )
+        if deficit_threshold is not None and operating_profit_total < float(deficit_threshold):
+            alerts.append(
+                {
+                    "title": "損益警告",
+                    "count": max(loss_stores, 1),
+                    "message": (
+                        "営業利益が目標値を下回っています。"
+                        f" 現在の合計: {operating_profit_total:,.0f} 円"
+                    ),
+                    "action": {
+                        "label": "粗利タブを開く",
+                        "callback": _activate_main_tab,
+                        "args": ("粗利",),
+                    },
+                    "severity": "high",
+                }
+            )
+        elif loss_stores > 0:
+            alerts.append(
+                {
+                    "title": "赤字店舗あり",
+                    "count": loss_stores,
+                    "message": f"営業赤字の店舗が{loss_stores}店あります。費目の見直しを検討してください。",
+                    "action": {
+                        "label": "粗利タブで確認",
+                        "callback": _activate_main_tab,
+                        "args": ("粗利",),
+                    },
+                    "severity": "medium",
+                }
+            )
+
+    return alerts
+
+
+def render_alert_center(
+    alerts: Sequence[Dict[str, object]],
+    alert_settings: Optional[Dict[str, object]],
+) -> None:
+    settings = alert_settings or {}
+    channel = settings.get("notification_channel", "banner")
+    total_alerts = int(sum(alert.get("count", 0) or 0 for alert in alerts))
+    if total_alerts == 0:
+        st.session_state.pop("show_alert_modal", None)
+    contact_info = []
+    email = settings.get("notification_email")
+    slack_webhook = settings.get("slack_webhook")
+    if email:
+        contact_info.append(f"メール通知先: {email}")
+    if slack_webhook:
+        contact_info.append("Slack連携: 登録済み")
+    contact_text = "｜".join(contact_info)
+
+    container = st.container()
+
+    if channel == "modal":
+        open_key = "alert_center_modal_open"
+        if total_alerts > 0:
+            if container.button(
+                f"🔔 アラートを確認 ({total_alerts})",
+                key=open_key,
+                type="primary",
+            ):
+                st.session_state["show_alert_modal"] = True
+        else:
+            container.success("現在重大なアラートはありません。")
+
+        if st.session_state.get("show_alert_modal") and alerts:
+            with st.modal("アラートセンター", key="alert_center_modal"):
+                if contact_text:
+                    st.caption(contact_text)
+                for alert in alerts:
+                    st.markdown(
+                        f"<div class='alert-card {alert.get('severity', 'medium')}'>"
+                        f"<div class='alert-card__title'>{alert.get('title')}</div>"
+                        f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
+                        f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
+                        "</div>",
+                        unsafe_allow_html=True,
+                    )
+                    action = alert.get("action") or {}
+                    callback = action.get("callback")
+                    if callback:
+                        st.button(
+                            action.get("label", "詳細を開く"),
+                            on_click=callback,
+                            args=action.get("args", ()),
+                            key=f"alert-action-modal-{alert.get('title')}",
+                        )
+                if st.button("閉じる", key="close-alert-modal"):
+                    st.session_state["show_alert_modal"] = False
+        return
+
+    with container:
+        banner_class = "alert-banner" if total_alerts else "alert-banner success"
+        header_text = (
+            f"🔔 アラートセンター（{total_alerts}件）"
+            if total_alerts
+            else "✅ アラートセンター"
+        )
+        container.markdown(
+            f"<div class='{banner_class}'>"
+            f"<div class='alert-banner__header'>{header_text}</div>"
+            f"<div class='alert-banner__body'></div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        if contact_text:
+            st.caption(contact_text)
+
+        if not alerts:
+            st.info("在庫・損益ともに基準値内です。分析を進めてください。")
+            return
+
+        columns = st.columns(len(alerts))
+        for column, alert in zip(columns, alerts):
+            column.markdown(
+                f"<div class='alert-card {alert.get('severity', 'medium')}'>"
+                f"<div class='alert-card__title'>{alert.get('title')}</div>"
+                f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
+                f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
+                "</div>",
+                unsafe_allow_html=True,
+            )
+            action = alert.get("action") or {}
+            callback = action.get("callback")
+            if callback:
+                column.button(
+                    action.get("label", "詳細を見る"),
+                    on_click=callback,
+                    args=action.get("args", ()),
+                    key=f"alert-action-{alert.get('title')}",
+                    use_container_width=True,
+                )
 
 def render_global_filter_bar(
     stores: Sequence[str],
@@ -1193,7 +1457,12 @@ def render_dashboard_tab(
             },
         ]
     )
-    overview_df = inventory.inventory_overview(sales_df, filtered_inventory)
+    overview_df = inventory.inventory_overview(
+        sales_df,
+        filtered_inventory,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+    )
     stockouts = (
         int((overview_df["stock_status"] == "在庫切れ").sum())
         if not overview_df.empty
@@ -1206,21 +1475,7 @@ def render_dashboard_tab(
     )
 
     if stockouts or negative_stores:
-        alert_messages = []
-        if stockouts:
-            alert_messages.append(f"在庫欠品{stockouts}件")
-        if negative_stores:
-            alert_messages.append(f"赤字店舗{negative_stores}店")
-        alert_text = "／".join(alert_messages)
-        st.markdown(
-            f"<div class='alert-box'>⚠️ {alert_text}</div>",
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            "<div class='alert-box success'>主要KPIは安定しています。詳細はタブで確認できます。</div>",
-            unsafe_allow_html=True,
-        )
+        st.info("ページ上部のアラートセンターに重要な注意事項が表示されています。")
 
     st.caption(
         "指標カードは直近期間の実績と前年比較・目標差分を示しています。下部のタブから詳細分析へ進んでください。"
@@ -2381,11 +2636,27 @@ def render_inventory_tab(
     def _build_inventory_timeseries(
         sales_subset: pd.DataFrame,
         inventory_subset: pd.DataFrame,
+        *,
+        rolling_window: int,
+        safety_buffer: int,
     ) -> pd.DataFrame:
         if inventory_subset.empty:
-            return pd.DataFrame(columns=["date", "estimated_stock", "safety_stock"])
+            return pd.DataFrame(
+                columns=[
+                    "date",
+                    "estimated_stock",
+                    "safety_stock",
+                    "moving_stock",
+                    "safety_lower",
+                    "safety_upper",
+                ]
+            )
+
         date_range = pd.date_range(filters.start_date, filters.end_date, freq="D")
         records = []
+        window = max(int(rolling_window), 1)
+        buffer_days = max(int(safety_buffer), 0)
+
         for _, row in inventory_subset.iterrows():
             store_name = row.get("store")
             product_name = row.get("product")
@@ -2401,9 +2672,12 @@ def render_inventory_tab(
             daily_sales = (
                 product_sales.groupby(product_sales["date"].dt.floor("D"))["sales_qty"]
                 .sum()
-                .reindex(date_range, fill_value=0)
+                .reindex(date_range, fill_value=0.0)
             )
-            remaining = (available - daily_sales.cumsum()).clip(lower=0)
+            remaining = (available - daily_sales.cumsum()).clip(lower=0.0)
+            moving_stock = remaining.rolling(window=window, min_periods=1).mean()
+            avg_daily_sales = daily_sales.rolling(window=window, min_periods=1).mean()
+
             records.append(
                 pd.DataFrame(
                     {
@@ -2411,16 +2685,50 @@ def render_inventory_tab(
                         "store": store_name,
                         "estimated_stock": remaining,
                         "safety_stock": safety,
+                        "moving_stock": moving_stock,
+                        "daily_sales": daily_sales,
+                        "avg_daily_sales": avg_daily_sales,
                     }
                 )
             )
+
         if not records:
-            return pd.DataFrame(columns=["date", "estimated_stock", "safety_stock"])
+            return pd.DataFrame(
+                columns=[
+                    "date",
+                    "estimated_stock",
+                    "safety_stock",
+                    "moving_stock",
+                    "safety_lower",
+                    "safety_upper",
+                ]
+            )
+
         combined = pd.concat(records)
         aggregated = (
-            combined.groupby("date")[["estimated_stock", "safety_stock"]]
-            .sum()
+            combined.groupby("date")
+            .agg(
+                estimated_stock=("estimated_stock", "sum"),
+                safety_stock=("safety_stock", "sum"),
+                moving_stock=("moving_stock", "sum"),
+                daily_sales=("daily_sales", "sum"),
+                avg_daily_sales=("avg_daily_sales", "sum"),
+            )
             .reset_index()
+        )
+        aggregated["moving_stock"] = aggregated["moving_stock"].rolling(
+            window=window, min_periods=1
+        ).mean()
+        aggregated["avg_daily_sales"] = aggregated["avg_daily_sales"].rolling(
+            window=window, min_periods=1
+        ).mean()
+        aggregated["safety_lower"] = (
+            (aggregated["safety_stock"] - aggregated["avg_daily_sales"] * buffer_days)
+            .clip(lower=0.0)
+            .fillna(0.0)
+        )
+        aggregated["safety_upper"] = (
+            aggregated["safety_stock"] + aggregated["avg_daily_sales"] * buffer_days
         )
         return aggregated
 
@@ -2470,7 +2778,12 @@ def render_inventory_tab(
         working_sales = working_sales[working_sales["category"] == category_choice]
         working_inventory = working_inventory[working_inventory["category"] == category_choice]
 
-    overview_df = inventory.inventory_overview(working_sales, working_inventory)
+    overview_df = inventory.inventory_overview(
+        working_sales,
+        working_inventory,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+    )
     if overview_df.empty:
         st.info("在庫データが見つかりません。")
         return
@@ -2492,6 +2805,10 @@ def render_inventory_tab(
     period_days = max((filters.end_date - filters.start_date).days + 1, 1)
     turnover_df = inventory.turnover_by_category(overview_df, period_days=period_days)
     avg_turnover = float(turnover_df["turnover"].mean()) if not turnover_df.empty else 0.0
+    coverage_series = overview_df.get("coverage_days")
+    avg_coverage = float(coverage_series.dropna().mean()) if coverage_series is not None else None
+    if coverage_series is not None and coverage_series.dropna().empty:
+        avg_coverage = None
 
     shortage_products = advice_df[advice_df["stock_status"] == "在庫切れ"]["product"].dropna().tolist()
     if stockouts > 0 and shortage_products:
@@ -2533,7 +2850,14 @@ def render_inventory_tab(
             },
             {
                 "label": "平均在庫回転率",
-                "value_text": f"{avg_turnover:.1f} 回",
+                "value_text": (
+                    f"{avg_turnover:.1f} 回"
+                    + (
+                        f"<div class='sub-value'>残日数 {avg_coverage:.1f} 日</div>"
+                        if avg_coverage is not None
+                        else "<div class='sub-value muted'>残日数 データ不足</div>"
+                    )
+                ),
                 "unit": "回",
                 "yoy": None,
                 "target_diff": avg_turnover - 8,
@@ -2541,7 +2865,20 @@ def render_inventory_tab(
         ]
     )
 
-    timeseries_df = _build_inventory_timeseries(working_sales, working_inventory)
+    rolling_window = int(
+        overview_df.get("analysis_window", pd.Series([inventory.DEFAULT_ROLLING_WINDOW]))
+        .iloc[0]
+    )
+    buffer_days = int(
+        overview_df.get("safety_buffer_days", pd.Series([inventory.DEFAULT_SAFETY_BUFFER_DAYS]))
+        .iloc[0]
+    )
+    timeseries_df = _build_inventory_timeseries(
+        working_sales,
+        working_inventory,
+        rolling_window=rolling_window,
+        safety_buffer=buffer_days,
+    )
     heatmap_source = advice_df.pivot_table(
         index="store", columns="category", values="estimated_stock", aggfunc="sum"
     ).fillna(0)
@@ -2581,6 +2918,17 @@ def render_inventory_tab(
                     hovertemplate="日付: %{x|%Y-%m-%d}<br>推定在庫: %{y:,.0f} 個<extra></extra>",
                 )
             )
+            if "moving_stock" in timeseries_df.columns:
+                inventory_trend.add_trace(
+                    go.Scatter(
+                        x=timeseries_df["date"],
+                        y=timeseries_df["moving_stock"],
+                        mode="lines",
+                        name=f"在庫移動平均（{rolling_window}日）",
+                        line=dict(color=_adjust_hex_color(colors["primary"], -0.15), dash="dot"),
+                        hovertemplate="日付: %{x|%Y-%m-%d}<br>移動平均: %{y:,.0f} 個<extra></extra>",
+                    )
+                )
             inventory_trend.add_trace(
                 go.Scatter(
                     x=timeseries_df["date"],
@@ -2591,9 +2939,35 @@ def render_inventory_tab(
                     hovertemplate="日付: %{x|%Y-%m-%d}<br>安全在庫: %{y:,.0f} 個<extra></extra>",
                 )
             )
-            shortage_mask = (
-                timeseries_df["estimated_stock"] < timeseries_df["safety_stock"]
-            )
+            if "safety_upper" in timeseries_df.columns and "safety_lower" in timeseries_df.columns:
+                inventory_trend.add_trace(
+                    go.Scatter(
+                        x=timeseries_df["date"],
+                        y=timeseries_df["safety_upper"],
+                        mode="lines",
+                        name=f"安全在庫+{buffer_days}日分",
+                        line=dict(color=_adjust_hex_color(colors["success"], -0.1), dash="dash"),
+                        hovertemplate="日付: %{x|%Y-%m-%d}<br>安全上限: %{y:,.0f} 個<extra></extra>",
+                        showlegend=True,
+                    )
+                )
+                inventory_trend.add_trace(
+                    go.Scatter(
+                        x=timeseries_df["date"],
+                        y=timeseries_df["safety_lower"],
+                        mode="lines",
+                        name=f"安全在庫-{buffer_days}日分",
+                        line=dict(color=_adjust_hex_color(colors["success"], 0.2), dash="dash"),
+                        hovertemplate="日付: %{x|%Y-%m-%d}<br>安全下限: %{y:,.0f} 個<extra></extra>",
+                        fill="tonexty",
+                        fillcolor="rgba(63, 178, 126, 0.08)",
+                        showlegend=True,
+                    )
+                )
+                safety_floor = timeseries_df["safety_lower"].fillna(timeseries_df["safety_stock"])
+            else:
+                safety_floor = timeseries_df["safety_stock"]
+            shortage_mask = timeseries_df["estimated_stock"] < safety_floor
             if shortage_mask.any():
                 inventory_trend.add_trace(
                     go.Scatter(
@@ -2617,7 +2991,9 @@ def render_inventory_tab(
                     x=1.02,
                 ),
             )
-            st.caption("安全在庫を下回る日には赤色マーカーで表示します。")
+            st.caption(
+                f"安全在庫と{buffer_days}日分の上下限を表示しています。赤色マーカーは安全下限を下回った日を示します。"
+            )
             st.plotly_chart(inventory_trend, use_container_width=True)
 
     with analysis_tabs[1]:
@@ -2628,14 +3004,14 @@ def render_inventory_tab(
             turnover_plot_df = turnover_df.sort_values(
                 "turnover", ascending=False
             ).reset_index(drop=True)
-            bar_colors = [
-                colors["error"] if value < 0 else colors["primary"]
-                for value in turnover_plot_df["turnover"].astype(float).tolist()
-            ]
+            turnover_values = (
+                turnover_plot_df["turnover"].astype(float).clip(lower=0.0).tolist()
+            )
+            bar_colors = [colors["primary"] for _ in turnover_values]
             turnover_chart = go.Figure(
                 go.Bar(
                     x=turnover_plot_df["category"].astype(str).tolist(),
-                    y=turnover_plot_df["turnover"].astype(float).tolist(),
+                    y=turnover_values,
                     marker_color=bar_colors,
                     hovertemplate="カテゴリ: %{x}<br>在庫回転率: %{y:.1f} 回<extra></extra>",
                 )
@@ -2711,6 +3087,88 @@ def render_data_management_tab(
     st.subheader("取込状況")
     st.dataframe(status_df, use_container_width=True)
 
+    def _detect_sales_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+        columns = ["検出項目", "件数", "備考"]
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+        issues: List[Dict[str, object]] = []
+        negative_amount = df[df["sales_amount"] < 0]
+        if not negative_amount.empty:
+            first = negative_amount.iloc[0]
+            issues.append(
+                {
+                    "検出項目": "売上金額がマイナス",
+                    "件数": len(negative_amount),
+                    "備考": f"例: {first['product']} ({first['date']:%Y-%m-%d})",
+                }
+            )
+        negative_qty = df[df["sales_qty"] < 0]
+        if not negative_qty.empty:
+            sample = negative_qty.iloc[0]
+            issues.append(
+                {
+                    "検出項目": "販売数量がマイナス",
+                    "件数": len(negative_qty),
+                    "備考": f"例: {sample['product']} ({sample['date']:%Y-%m-%d})",
+                }
+            )
+        margin_outliers = df[(df["gross_margin"] < 0) | (df["gross_margin"] > 1)]
+        if not margin_outliers.empty:
+            issues.append(
+                {
+                    "検出項目": "粗利率が0〜100%の範囲外",
+                    "件数": len(margin_outliers),
+                    "備考": "粗利率の算出ロジックを確認してください。",
+                }
+            )
+        return pd.DataFrame(issues, columns=columns)
+
+    def _detect_inventory_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+        columns = ["検出項目", "件数", "備考"]
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+        issues: List[Dict[str, object]] = []
+        for column in ["opening_stock", "planned_purchase", "safety_stock"]:
+            negative = df[df[column] < 0]
+            if not negative.empty:
+                issues.append(
+                    {
+                        "検出項目": f"{column} がマイナス",
+                        "件数": len(negative),
+                        "備考": f"例: {negative.iloc[0]['product']}",
+                    }
+                )
+        zero_safety = df[df["safety_stock"] == 0]
+        if not zero_safety.empty:
+            issues.append(
+                {
+                    "検出項目": "安全在庫が0",
+                    "件数": len(zero_safety),
+                    "備考": "安全在庫基準を設定してください。",
+                }
+            )
+        return pd.DataFrame(issues, columns=columns)
+
+    def _detect_fixed_anomalies(df: pd.DataFrame) -> pd.DataFrame:
+        columns = ["検出項目", "件数", "備考"]
+        if df.empty:
+            return pd.DataFrame(columns=columns)
+        issues: List[Dict[str, object]] = []
+        numeric_cols = [
+            col for col in df.columns if col not in {"store", "month", "date"}
+        ]
+        for column in numeric_cols:
+            negative = df[df[column] < 0]
+            if not negative.empty:
+                issues.append(
+                    {
+                        "検出項目": f"{column} がマイナス",
+                        "件数": len(negative),
+                        "備考": "固定費の入力値をご確認ください。",
+                    }
+                )
+        return pd.DataFrame(issues, columns=columns)
+
     if status_df["件数"].sum() == 0:
         sample_path = Path(sample_files.get("sales", "")) if sample_files else None
         action: Optional[Dict[str, object]] = None
@@ -2752,6 +3210,114 @@ def render_data_management_tab(
             message_kwargs={"timestamp": updated_at.strftime("%Y-%m-%d %H:%M")},
         )
         st.caption("売上タブで最新データをご確認ください。")
+
+    sales_preview = current_datasets.get("sales", baseline.get("sales", pd.DataFrame()))
+    inventory_preview = current_datasets.get(
+        "inventory", baseline.get("inventory", pd.DataFrame())
+    )
+    fixed_preview = current_datasets.get(
+        "fixed_costs", baseline.get("fixed_costs", pd.DataFrame())
+    )
+
+    st.subheader("データクレンジング")
+    cleansing_tabs = st.tabs(["売上データ", "仕入／在庫データ", "固定費データ"])
+
+    with cleansing_tabs[0]:
+        st.markdown("##### プレビュー")
+        st.dataframe(sales_preview.head(20), use_container_width=True)
+        sales_issues = _detect_sales_anomalies(sales_preview)
+        if sales_issues.empty:
+            st.success("売上データに異常値は見つかりませんでした。")
+        else:
+            st.error("売上データに異常値を検出しました。")
+            st.dataframe(sales_issues, use_container_width=True)
+
+    with cleansing_tabs[1]:
+        st.markdown("##### プレビュー")
+        st.dataframe(inventory_preview.head(20), use_container_width=True)
+        inventory_issues = _detect_inventory_anomalies(inventory_preview)
+        if inventory_issues.empty:
+            st.success("在庫データは正常です。")
+        else:
+            st.warning("在庫データで確認が必要な項目があります。")
+            st.dataframe(inventory_issues, use_container_width=True)
+
+        raw_categories = sorted(
+            {
+                *(
+                    sales_preview.get("category", pd.Series(dtype=str))
+                    .dropna()
+                    .unique()
+                    .tolist()
+                ),
+                *(
+                    inventory_preview.get("category", pd.Series(dtype=str))
+                    .dropna()
+                    .unique()
+                    .tolist()
+                ),
+            }
+        )
+        baseline_categories = (
+            baseline.get("sales", pd.DataFrame())
+            .get("category", pd.Series(dtype=str))
+            .dropna()
+            .unique()
+            .tolist()
+        )
+        mapping_state = st.session_state.setdefault("category_mapping", {})
+        if raw_categories:
+            st.markdown("##### カテゴリマッピング")
+            options = sorted({*raw_categories, *baseline_categories})
+            with st.form("category_mapping_form"):
+                st.caption("自社データのカテゴリを分析用の呼称に揃えます。")
+                selections: Dict[str, str] = {}
+                for category in raw_categories:
+                    default_value = mapping_state.get(category, category)
+                    default_index = options.index(default_value) if default_value in options else 0
+                    selections[category] = st.selectbox(
+                        f"{category} を次のカテゴリに統合", options, index=default_index
+                    )
+                apply_mapping = st.form_submit_button("マッピングを適用", type="primary")
+            if apply_mapping:
+                mapping_state.update(selections)
+                updated_datasets = _copy_datasets(st.session_state["current_datasets"])
+                if not updated_datasets["sales"].empty:
+                    updated_datasets["sales"]["category"] = (
+                        updated_datasets["sales"]["category"].map(mapping_state).fillna(
+                            updated_datasets["sales"]["category"]
+                        )
+                    )
+                if not updated_datasets["inventory"].empty:
+                    updated_datasets["inventory"]["category"] = (
+                        updated_datasets["inventory"]["category"].map(mapping_state).fillna(
+                            updated_datasets["inventory"]["category"]
+                        )
+                    )
+                st.session_state["current_datasets"] = updated_datasets
+                st.session_state["category_mapping"] = mapping_state
+                st.success("カテゴリマッピングを適用しました。分析全体に即時反映されます。")
+                trigger_rerun()
+            if mapping_state:
+                mapping_df = pd.DataFrame(
+                    [
+                        {"元カテゴリ": src, "適用カテゴリ": dst}
+                        for src, dst in sorted(mapping_state.items())
+                    ]
+                )
+                st.dataframe(mapping_df, use_container_width=True)
+        else:
+            st.caption("カテゴリ列が見つかりません。CSVテンプレートに従って項目を追加してください。")
+
+    with cleansing_tabs[2]:
+        st.markdown("##### プレビュー")
+        st.dataframe(fixed_preview.head(20), use_container_width=True)
+        fixed_issues = _detect_fixed_anomalies(fixed_preview)
+        if fixed_issues.empty:
+            st.success("固定費データに異常はありません。")
+        else:
+            st.warning("固定費データの見直しが必要です。")
+            st.dataframe(fixed_issues, use_container_width=True)
 
     st.subheader("CSVアップロード")
     uploaded_files = st.file_uploader(
@@ -2807,25 +3373,52 @@ def render_help_settings_page() -> None:
     st.markdown(
         """
         - 左サイドバーの「ページ切替」からダッシュボード／データ管理／ヘルプページを移動できます。
-        - ダッシュボードでは上部の共通コントロールで期間・店舗を変更すると、全ての分析セクションに反映されます。
-        - 主要分析セクション（売上・粗利・在庫・資金）は、上部のタブバーまたはサイドバーからいつでも切り替え可能です。
+        - 上部の共通フィルターで期間・店舗・カテゴリを変更すると、売上／粗利／在庫／資金タブすべてに反映されます。
+        - 画面上部の「アラートセンター」では、在庫欠品や赤字など重要な通知と対象タブへのショートカットを確認できます。
+        - データ管理ページでは、取込状況の確認・異常値チェック・カテゴリマッピングまで一括で実施できます。
         """
     )
 
-    st.markdown("#### アラートと目標値の設定")
+    st.markdown("#### データ準備とテンプレート")
     st.markdown(
         """
-        - サイドバーの「アラート設定」で欠品数・過剰在庫数・赤字基準を更新できます。
-        - 設定値はセッション内で保持され、KGI/KPIカードに即時反映されます。
-        - 粗利ページでは固定費の調整やシミュレーション画面への遷移も行えます。
+        - 「データクレンジング」タブでアップロード済みデータのプレビューと異常値検出が行えます。
+        - カテゴリマッピングを使うと、店舗ごとに異なる商品カテゴリを分析用の共通カテゴリへ統一できます。
+        - CSVテンプレートはサイドバーとデータ管理ページの双方からダウンロード可能です。
+        """
+    )
+    template_info = pd.DataFrame(
+        [
+            {"データ種別": "売上", "必須列": "date, store, category, product, sales_amount, sales_qty, cogs_amount"},
+            {"データ種別": "仕入/在庫", "必須列": "store, product, category, opening_stock, planned_purchase, safety_stock"},
+            {"データ種別": "固定費", "必須列": "store, rent, payroll, utilities, marketing, other_fixed"},
+        ]
+    )
+    st.dataframe(template_info, use_container_width=True)
+
+    st.markdown("#### アラート通知の設定")
+    st.markdown(
+        """
+        - サイドバーでアラート表示方法（ページ上部バナー／モーダル）と通知先メール・Slack Webhookを登録できます。
+        - しきい値を超えた在庫欠品・過剰在庫・赤字が発生すると、アラートセンターに件数とショートカットが表示されます。
+        - メールアドレス／Slack Webhookを設定すると、将来的な外部通知連携の準備が整います。
         """
     )
 
-    st.markdown("#### サポート")
+    st.markdown("#### 推奨環境")
     st.markdown(
         """
-        - データの取り込みフォーマットは「データ管理」ページのテンプレートをご確認ください。
-        - 追加のサポートが必要な場合は、社内システム管理者またはベンダー担当窓口までお問い合わせください。
+        - 推奨ブラウザ: Google Chrome 最新版、Microsoft Edge 最新版。
+        - 解像度: 1440×900 以上を推奨（フルHD環境での表示最適化済み）。
+        - セキュリティソフトや広告ブロッカーをご利用の場合は、必要に応じて *.streamlit.app ドメインを許可してください。
+        """
+    )
+
+    st.markdown("#### 操作ガイド動画")
+    st.markdown(
+        """
+        - [ダッシュボードの基本操作デモを見る](https://example.com/matsuya-dashboard-demo)
+        - 社内向けトレーニング資料はナレッジベースの「松屋ダッシュボード運用ガイド」を参照してください。
         """
     )
 
@@ -3112,119 +3705,102 @@ def render_cash_tab(
     st.subheader("資金繰りシミュレーション")
     total_gross_profit = float(pnl_df["gross_profit"].sum())
     default_margin = total_gross_profit / total_sales if total_sales else 0.45
-    default_margin = float(min(max(default_margin, 0.3), 0.8))
+    default_margin = float(min(max(default_margin, 0.1), 0.8))
     default_fixed_cost = float(pnl_df["total_fixed_cost"].sum())
 
-    defaults = st.session_state.setdefault(
-        "simulation_defaults",
-        {
-            "gross_margin": float(round(default_margin, 2)),
-            "fixed_cost": float(default_fixed_cost),
-            "target_profit": 5_000_000.0,
-        },
-    )
-    defaults.update(
-        {
-            "gross_margin": float(round(default_margin, 2)) if default_margin else defaults["gross_margin"],
-            "fixed_cost": float(default_fixed_cost) if default_fixed_cost else defaults["fixed_cost"],
-        }
-    )
+    inputs_state = st.session_state.setdefault("cash_flow_inputs", {})
+    previous_margin_default = inputs_state.get("gross_margin_default")
+    margin_default = float(round(default_margin, 2))
+    if "gross_margin" not in inputs_state:
+        inputs_state["gross_margin"] = margin_default
+    elif (
+        previous_margin_default is not None
+        and abs(inputs_state.get("gross_margin", margin_default) - previous_margin_default) < 1e-6
+    ):
+        inputs_state["gross_margin"] = margin_default
+    inputs_state["gross_margin_default"] = margin_default
 
-    st.session_state.setdefault("simulation_margin", defaults["gross_margin"])
-    st.session_state.setdefault("simulation_fixed_cost", defaults["fixed_cost"])
-    st.session_state.setdefault("simulation_target_value", defaults.get("target_profit", 5_000_000.0))
-    st.session_state.setdefault("simulation_margin_slider", st.session_state["simulation_margin"])
-    st.session_state.setdefault("simulation_margin_input", st.session_state["simulation_margin"])
-    st.session_state.setdefault("simulation_fixed_slider", st.session_state["simulation_fixed_cost"])
-    st.session_state.setdefault("simulation_fixed_input", st.session_state["simulation_fixed_cost"])
-    st.session_state.setdefault("simulation_target_input", st.session_state["simulation_target_value"])
+    previous_fixed_default = inputs_state.get("fixed_cost_default")
+    fixed_default = float(default_fixed_cost)
+    if "fixed_cost" not in inputs_state:
+        inputs_state["fixed_cost"] = fixed_default
+    elif (
+        previous_fixed_default is not None
+        and abs(inputs_state.get("fixed_cost", fixed_default) - previous_fixed_default) < 1.0
+    ):
+        inputs_state["fixed_cost"] = fixed_default
+    inputs_state["fixed_cost_default"] = fixed_default
 
-    def _update_margin_from_slider() -> None:
-        st.session_state["simulation_margin"] = float(st.session_state["simulation_margin_slider"])
-        st.session_state["simulation_margin_input"] = st.session_state["simulation_margin"]
-
-    def _update_margin_from_input() -> None:
-        st.session_state["simulation_margin"] = float(st.session_state["simulation_margin_input"])
-        st.session_state["simulation_margin_slider"] = st.session_state["simulation_margin"]
-
-    def _update_fixed_from_slider() -> None:
-        st.session_state["simulation_fixed_cost"] = float(st.session_state["simulation_fixed_slider"])
-        st.session_state["simulation_fixed_input"] = st.session_state["simulation_fixed_cost"]
-
-    def _update_fixed_from_input() -> None:
-        st.session_state["simulation_fixed_cost"] = float(st.session_state["simulation_fixed_input"])
-        st.session_state["simulation_fixed_slider"] = st.session_state["simulation_fixed_cost"]
-
-    margin_slider_col, margin_input_col = st.columns([3, 1])
-    margin_slider_col.slider(
-        "粗利率",
-        min_value=0.3,
-        max_value=0.8,
-        value=float(st.session_state["simulation_margin_slider"]),
-        step=0.01,
-        key="simulation_margin_slider",
-        on_change=_update_margin_from_slider,
-    )
-    margin_input_col.number_input(
-        "粗利率 (直接入力)",
-        min_value=0.3,
-        max_value=0.8,
-        value=float(st.session_state["simulation_margin_input"]),
-        step=0.01,
-        format="%.2f",
-        key="simulation_margin_input",
-        on_change=_update_margin_from_input,
-    )
-
-    max_fixed_range = max(
-        st.session_state["simulation_fixed_cost"] * 1.5,
-        defaults["fixed_cost"] * 1.5,
-        5_000_000.0,
-    )
-    fixed_slider_col, fixed_input_col = st.columns([3, 1])
-    fixed_slider_col.slider(
-        "固定費合計",
-        min_value=0.0,
-        max_value=float(max_fixed_range),
-        value=float(st.session_state["simulation_fixed_slider"]),
-        step=100000.0,
-        key="simulation_fixed_slider",
-        on_change=_update_fixed_from_slider,
-        format="%0.0f",
-    )
-    fixed_input_col.number_input(
-        "固定費 (直接入力)",
-        min_value=0.0,
-        value=float(st.session_state["simulation_fixed_input"]),
-        step=50000.0,
-        key="simulation_fixed_input",
-        on_change=_update_fixed_from_input,
-        format="%0.0f",
-    )
+    inputs_state.setdefault("target_profit", 5_000_000.0)
+    inputs_state.setdefault("preset", "500万円")
 
     preset_options = {"500万円": 5_000_000.0, "1,000万円": 10_000_000.0, "カスタム": None}
-    st.session_state.setdefault("simulation_target_preset", "500万円")
-    preset_label = st.radio(
-        "目標利益プリセット",
-        list(preset_options.keys()),
-        horizontal=True,
-        key="simulation_target_preset",
-    )
-    if preset_options[preset_label] is not None:
-        st.session_state["simulation_target_value"] = float(preset_options[preset_label])
-        st.session_state["simulation_target_input"] = st.session_state["simulation_target_value"]
+    preset_keys = list(preset_options.keys())
+    preset_value = inputs_state.get("preset", preset_keys[0])
+    preset_index = preset_keys.index(preset_value) if preset_value in preset_keys else 0
 
-    target_profit = st.number_input(
-        "目標利益 (円)",
-        min_value=0.0,
-        value=float(st.session_state["simulation_target_input"]),
-        step=50000.0,
-        key="simulation_target_input",
-    )
-    st.session_state["simulation_target_value"] = target_profit
+    with st.form("cash_flow_form"):
+        col1, col2, col3 = st.columns(3)
+        margin_choice = col1.slider(
+            "粗利率",
+            min_value=0.1,
+            max_value=0.8,
+            value=float(inputs_state.get("gross_margin", margin_default)),
+            step=0.01,
+            format="%0.2f",
+        )
+        fixed_choice = col2.number_input(
+            "固定費（円）",
+            min_value=0.0,
+            value=float(inputs_state.get("fixed_cost", fixed_default)),
+            step=100000.0,
+            format="%0.0f",
+        )
+        preset_choice = col3.selectbox(
+            "目標利益テンプレート",
+            preset_keys,
+            index=preset_index,
+            key="cash_flow_preset_select",
+        )
+        preset_target_value = preset_options[preset_choice]
+        target_default = (
+            float(preset_target_value)
+            if preset_target_value is not None
+            else float(inputs_state.get("target_profit", 5_000_000.0))
+        )
+        target_choice = col3.number_input(
+            "目標利益（円）",
+            min_value=0.0,
+            value=target_default,
+            step=50000.0,
+            format="%0.0f",
+            disabled=preset_target_value is not None,
+        )
+        submitted = st.form_submit_button("試算する", type="primary")
 
-    gross_margin = float(st.session_state["simulation_margin"])
-    fixed_cost = float(st.session_state["simulation_fixed_cost"])
+    if submitted:
+        target_value = (
+            float(preset_target_value)
+            if preset_target_value is not None
+            else float(target_choice)
+        )
+        inputs_state.update(
+            {
+                "gross_margin": float(margin_choice),
+                "fixed_cost": float(fixed_choice),
+                "target_profit": target_value,
+                "preset": preset_choice,
+            }
+        )
+
+    if inputs_state.get("preset") != "カスタム":
+        preset_target = preset_options.get(inputs_state.get("preset"))
+        if preset_target is not None:
+            inputs_state["target_profit"] = float(preset_target)
+
+    gross_margin = float(inputs_state.get("gross_margin", margin_default))
+    fixed_cost = float(inputs_state.get("fixed_cost", fixed_default))
+    target_profit = float(inputs_state.get("target_profit", 5_000_000.0))
 
     inputs = simulation.SimulationInputs(
         gross_margin=gross_margin,
@@ -3241,14 +3817,6 @@ def render_cash_tab(
     reached_target = target_sales_value > 0 and current_sales_value >= target_sales_value
     gauge_base = max(target_sales_value, current_sales_value)
     gauge_max = gauge_base * 1.1 if gauge_base else 1.0
-
-    defaults.update(
-        {
-            "gross_margin": gross_margin,
-            "fixed_cost": fixed_cost,
-            "target_profit": target_profit,
-        }
-    )
 
     curve = simulation.breakeven_sales_curve(simulation.DEFAULT_MARGIN_RANGE, fixed_cost)
     curve_chart = px.line(
@@ -3376,6 +3944,7 @@ def render_cash_tab(
                 "target_profit": target_profit,
                 "breakeven": requirements["breakeven"],
                 "target_sales": requirements["target_sales"],
+                "preset": inputs_state.get("preset", "カスタム"),
                 "saved_at": datetime.now().isoformat(),
             }
             scenarios = st.session_state.setdefault("saved_scenarios", [])
@@ -3398,14 +3967,15 @@ def render_cash_tab(
             )
             selected = saved_scenarios[selected_index]
             if st.button("選択したシナリオを適用", key="apply_simulation_scenario"):
-                st.session_state["simulation_margin"] = float(selected["gross_margin"])
-                st.session_state["simulation_fixed_cost"] = float(selected["fixed_cost"])
-                st.session_state["simulation_target_value"] = float(selected["target_profit"])
-                st.session_state["simulation_margin_slider"] = st.session_state["simulation_margin"]
-                st.session_state["simulation_margin_input"] = st.session_state["simulation_margin"]
-                st.session_state["simulation_fixed_slider"] = st.session_state["simulation_fixed_cost"]
-                st.session_state["simulation_fixed_input"] = st.session_state["simulation_fixed_cost"]
-                st.session_state["simulation_target_input"] = st.session_state["simulation_target_value"]
+                scenario_inputs = st.session_state.setdefault("cash_flow_inputs", {})
+                scenario_inputs.update(
+                    {
+                        "gross_margin": float(selected["gross_margin"]),
+                        "fixed_cost": float(selected["fixed_cost"]),
+                        "target_profit": float(selected["target_profit"]),
+                        "preset": "カスタム",
+                    }
+                )
                 trigger_rerun()
 
             scenarios_df = pd.DataFrame(saved_scenarios)
@@ -3520,6 +4090,14 @@ def main() -> None:
     channels = transformers.extract_channels(datasets["sales"])
     default_period = _default_period(datasets["sales"])
     bounds = _dataset_bounds(datasets["sales"])
+
+    alerts = _collect_alerts(
+        datasets,
+        sidebar_state.get("alert_settings"),
+        default_period,
+    )
+    st.session_state["latest_alerts"] = alerts
+    render_alert_center(alerts, sidebar_state.get("alert_settings"))
 
     st.sidebar.header("ページ切替")
     current_page = st.session_state.get("active_page", PAGE_OPTIONS[0])

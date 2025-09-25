@@ -402,35 +402,51 @@ def _resolve_target_fixed_cost() -> Optional[float]:
 
 
 MESSAGE_DICTIONARY = {
-    "empty": {
+    "empty_sales": {
         "level": "warning",
-        "message": "データが見つかりません。サイドバーからCSVをアップロードしてください。",
-        "guidance": "サンプルCSVを利用して動作確認ができます。",
-        "action_label": "サンプルデータをダウンロード",
+        "message": "指定期間の売上データがありません。",
+        "guidance": "期間を変更すると過去データを確認できます。",
+        "action_label": "期間を変更する",
     },
-    "loading": {
+    "loading_data": {
         "level": "info",
-        "message": "データを読み込み中です。完了までしばらくお待ちください…",
-        "guidance": "アップロード内容に応じて数秒〜1分ほどかかる場合があります。",
+        "message": "データを読み込み中です…しばらくお待ちください。",
+        "guidance": "バックエンド処理に時間がかかる場合があります。",
         "show_progress": True,
+    },
+    "error_api": {
+        "level": "error",
+        "message": "データの取得に失敗しました。ネットワーク接続を確認の上、再試行してください。",
+        "guidance": "接続が復旧したらボタンから再取得できます。",
+        "action": {"label": "再試行する"},
+    },
+    "file_format_error": {
+        "level": "error",
+        "message": "アップロードされたCSVの形式が不正です。テンプレートに沿って修正してください。",
+        "guidance": "列名・文字コードをテンプレートと比較してご確認ください。",
+        "action": {"label": "テンプレートを確認する"},
+    },
+    "inventory_warning": {
+        "level": "warning",
+        "message": "在庫が安全在庫を下回っています：{summary}",
+        "guidance": "欠品リスクが高い商品から優先的に補充を検討してください。",
+    },
+    "simulation_saved": {
+        "level": "success",
+        "message": "シミュレーション結果を保存しました。",
+        "guidance": None,
+    },
+    "session_timeout": {
+        "level": "warning",
+        "message": "セッションが切れました。再ログインしてください。",
+        "guidance": None,
+        "action": {"label": "再ログインする"},
     },
     "complete": {
         "level": "success",
         "message": "データ取り込みが完了しました。更新日時：{timestamp}",
         "guidance": "最新データを反映した分析へ移動できます。",
         "action_label": "売上分析へ",
-    },
-    "error": {
-        "level": "error",
-        "message": "読み込みに失敗しました：{reason}",
-        "guidance": "期待される列名やテンプレートをご確認のうえ、再度アップロードしてください。",
-        "action_label": "テンプレートを見る",
-    },
-    "stock_alert": {
-        "level": "warning",
-        "message": "在庫が安全在庫を下回りました。欠品商品：{highlight}",
-        "guidance": "発注量の目安を確認し、早急に補充を検討してください。",
-        "action_label": "発注リストを確認",
     },
     "deficit_alert": {
         "level": "error",
@@ -439,6 +455,15 @@ MESSAGE_DICTIONARY = {
         "action_label": "損益詳細を開く",
     },
 }
+
+MESSAGE_DICTIONARY.update(
+    {
+        "empty": MESSAGE_DICTIONARY["empty_sales"],
+        "loading": MESSAGE_DICTIONARY["loading_data"],
+        "error": MESSAGE_DICTIONARY["file_format_error"],
+        "stock_alert": MESSAGE_DICTIONARY["inventory_warning"],
+    }
+)
 
 
 def render_guided_message(
@@ -477,15 +502,17 @@ def render_guided_message(
         progress_value = progress if progress is not None else 0.0
         container.progress(min(max(progress_value, 0.0), 1.0))
 
-    resolved_action = action or {}
-    label = resolved_action.get("label") or config.get("action_label")
+    config_action = dict(config.get("action", {})) if config.get("action") else {}
+    if action:
+        config_action.update(action)
+    label = config_action.get("label") or config.get("action_label")
     if label:
-        action_type = resolved_action.get("type", "button")
-        key = resolved_action.get("key") or f"message-action-{state_key}"
+        action_type = config_action.get("type", "button")
+        key = config_action.get("key") or f"message-action-{state_key}"
         if action_type == "download":
-            data = resolved_action.get("data")
-            file_name = resolved_action.get("file_name", "download.csv")
-            mime = resolved_action.get("mime", "text/csv")
+            data = config_action.get("data")
+            file_name = config_action.get("file_name", "download.csv")
+            mime = config_action.get("mime", "text/csv")
             if data is not None:
                 container.download_button(
                     label,
@@ -495,16 +522,16 @@ def render_guided_message(
                     key=key,
                 )
         elif action_type == "link":
-            url = resolved_action.get("url")
+            url = config_action.get("url")
             if url:
                 container.link_button(label, url, key=key)
         else:
             container.button(
                 label,
                 key=key,
-                on_click=resolved_action.get("on_click"),
-                args=resolved_action.get("args", ()),
-                kwargs=resolved_action.get("kwargs", {}),
+                on_click=config_action.get("on_click"),
+                args=config_action.get("args", ()),
+                kwargs=config_action.get("kwargs", {}),
             )
 
 
@@ -841,11 +868,12 @@ def render_global_filter_bar(
 ) -> transformers.FilterState:
     saved_store = st.session_state.setdefault("selected_store", transformers.ALL_STORES)
     saved_range = st.session_state.setdefault("date_range", default_period)
+    saved_period = st.session_state.setdefault("selected_period", saved_range)
     state = st.session_state.setdefault(
         GLOBAL_FILTER_KEY,
         {
             "preset": "直近30日",
-            "custom_range": saved_range,
+            "custom_range": saved_period,
             "store": saved_store,
         },
     )
@@ -894,6 +922,7 @@ def render_global_filter_bar(
     )
     st.session_state["selected_store"] = store_choice
     st.session_state["date_range"] = (start_date, end_date)
+    st.session_state["selected_period"] = (start_date, end_date)
 
     selected_stores = list(stores)
     if store_choice != transformers.ALL_STORES and store_choice:
@@ -1259,147 +1288,164 @@ def render_sales_tab(
                 hovertemplate="<b>%{x}</b><br>前年同月: %{y:,.0f} 円<extra></extra>",
             )
         )
-    st.subheader(f"売上推移（{breakdown_label}）")
-    st.caption("グラフをドラッグして範囲選択すると下部の明細が同じ期間に絞り込まれます。")
-    trend_events = plotly_events(
-        timeseries_chart,
-        select_event=True,
-        click_event=True,
-        override_width="100%",
-        override_height=420,
-        key="sales_trend_events",
-    )
 
-    st.subheader("チャネル別構成比")
     composition_df = (
         filtered_sales.groupby("channel")["sales_amount"].sum().reset_index()
     )
+    layout_cols = st.columns([3, 2], gap="large")
     selected_channels: List[str] = []
-    if not composition_df.empty:
-        composition_df = composition_df.sort_values("sales_amount", ascending=False)
-        composition_df["構成比"] = (
-            composition_df["sales_amount"] / composition_df["sales_amount"].sum()
-        )
-        plot_df = composition_df.assign(
-            share_percentage=lambda df: df["構成比"] * 100
-        )
-        channel_composition_chart = px.bar(
-            plot_df,
-            x="sales_amount",
-            y="channel",
-            orientation="h",
-            labels={"sales_amount": "売上金額（円）", "channel": "チャネル"},
-            color_discrete_sequence=[colors["primary"]],
-            custom_data=["share_percentage", "channel"],
-        )
-        channel_composition_chart.update_layout(
-            xaxis_title="売上金額（円）",
-            yaxis_title="チャネル",
-        )
-        channel_composition_chart.update_traces(
-            hovertemplate="<b>%{y}</b><br>売上金額: %{x:,.0f} 円<br>構成比: %{customdata[0]:.1f}%<extra></extra>"
-        )
-        channel_events = plotly_events(
-            channel_composition_chart,
-            click_event=True,
+    trend_events: List[Dict[str, object]] = []
+
+    with layout_cols[0]:
+        st.subheader(f"売上推移（{breakdown_label}）")
+        st.caption("ドラッグで期間選択すると明細が自動で絞り込まれます。")
+        trend_events = plotly_events(
+            timeseries_chart,
             select_event=True,
+            click_event=True,
             override_width="100%",
-            override_height=360,
-            key="sales_channel_events",
-        )
-        selected_channels = sorted(
-            {
-                event.get("y")
-                for event in channel_events
-                if isinstance(event, dict) and event.get("y")
-            }
-        )
-        if selected_channels:
-            st.caption("選択中のチャネル: " + "、".join(selected_channels))
-        else:
-            st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
-        st.dataframe(
-            composition_df.rename(
-                columns={"channel": "チャネル", "sales_amount": "売上金額"}
-            ).assign(構成比=lambda df: df["構成比"].map(lambda v: f"{v*100:.1f}%")),
-            use_container_width=True,
-        )
-    else:
-        st.caption("チャネル別の集計データがありません。")
-
-    st.subheader("売上明細")
-    if trend_events:
-        detail_df = sales.drilldown_details(
-            filtered_sales,
-            trend_events,
-            view_filters.period_granularity,
-            breakdown_column,
-        )
-        if selected_channels and "チャネル" in detail_df.columns:
-            detail_df = detail_df[detail_df["チャネル"].isin(selected_channels)]
-    else:
-        detail_columns = [
-            "date",
-            "store",
-            "category",
-            "region",
-            "channel",
-            "product",
-            "sales_amount",
-            "gross_profit",
-            "sales_qty",
-        ]
-        detail_df = filtered_sales[detail_columns].copy()
-        if selected_channels:
-            detail_df = detail_df[detail_df["channel"].isin(selected_channels)]
-        detail_df = detail_df.sort_values("date", ascending=False)
-        detail_df["gross_margin"] = (
-            detail_df["gross_profit"]
-            / detail_df["sales_amount"].replace(0, pd.NA)
-        ).fillna(0.0)
-        detail_df = detail_df.rename(
-            columns={
-                "date": "日付",
-                "store": "店舗",
-                "category": "カテゴリ",
-                "region": "地域",
-                "channel": "チャネル",
-                "product": "商品",
-                "sales_amount": "売上",
-                "gross_profit": "粗利",
-                "sales_qty": "販売数量",
-                "gross_margin": "粗利率",
-            }
+            override_height=420,
+            key="sales_trend_events",
         )
 
-    if detail_df.empty:
-        st.info("選択した条件に該当する売上明細がありません。")
-        export_df = detail_df
-    else:
-        export_df = detail_df
-        st.dataframe(
-            detail_df.style.format(
+    with layout_cols[1]:
+        st.subheader("チャネル別構成比")
+        if not composition_df.empty:
+            composition_df = composition_df.sort_values(
+                "sales_amount", ascending=False
+            )
+            composition_df["構成比"] = (
+                composition_df["sales_amount"] / composition_df["sales_amount"].sum()
+            )
+            plot_df = composition_df.assign(
+                share_percentage=lambda df: df["構成比"] * 100
+            )
+            channel_composition_chart = px.bar(
+                plot_df,
+                x="sales_amount",
+                y="channel",
+                orientation="h",
+                labels={"sales_amount": "売上金額（円）", "channel": "チャネル"},
+                color_discrete_sequence=[colors["primary"]],
+                custom_data=["share_percentage", "channel"],
+            )
+            channel_composition_chart.update_layout(
+                xaxis_title="売上金額（円）",
+                yaxis_title="チャネル",
+            )
+            channel_composition_chart.update_traces(
+                hovertemplate="<b>%{y}</b><br>売上金額: %{x:,.0f} 円<br>構成比: %{customdata[0]:.1f}%<extra></extra>"
+            )
+            channel_events = plotly_events(
+                channel_composition_chart,
+                click_event=True,
+                select_event=True,
+                override_width="100%",
+                override_height=360,
+                key="sales_channel_events",
+            )
+            selected_channels = sorted(
                 {
-                    "売上": "{:,.0f}",
-                    "粗利": "{:,.0f}",
-                    "販売数量": "{:,.1f}",
-                    "粗利率": "{:.1%}",
+                    event.get("y")
+                    for event in channel_events
+                    if isinstance(event, dict) and event.get("y")
                 }
-            ),
-            use_container_width=True,
-        )
+            )
+            if selected_channels:
+                st.caption("選択中のチャネル: " + "、".join(selected_channels))
+            else:
+                st.caption("棒をクリックするとチャネル別に明細を絞り込めます。")
+            with st.expander("チャネル別明細", expanded=False):
+                st.dataframe(
+                    composition_df.rename(
+                        columns={"channel": "チャネル", "sales_amount": "売上金額"}
+                    ).assign(
+                        構成比=lambda df: df["構成比"].map(
+                            lambda v: f"{v*100:.1f}%"
+                        )
+                    ),
+                    use_container_width=True,
+                )
+        else:
+            st.caption("チャネル別の集計データがありません。")
 
-    report.csv_download(
-        "売上データをCSV出力",
-        export_df,
-        file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}_{filters.end_date:%Y%m%d}.csv",
-    )
-    report.pdf_download(
-        "売上データをPDF出力",
-        "売上サマリー",
-        export_df,
-        file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}.pdf",
-    )
+    detail_expander = st.expander("売上明細と出力", expanded=False)
+    with detail_expander:
+        st.markdown("#### 売上明細")
+        if trend_events:
+            detail_df = sales.drilldown_details(
+                filtered_sales,
+                trend_events,
+                view_filters.period_granularity,
+                breakdown_column,
+            )
+            if selected_channels and "チャネル" in detail_df.columns:
+                detail_df = detail_df[detail_df["チャネル"].isin(selected_channels)]
+        else:
+            detail_columns = [
+                "date",
+                "store",
+                "category",
+                "region",
+                "channel",
+                "product",
+                "sales_amount",
+                "gross_profit",
+                "sales_qty",
+            ]
+            detail_df = filtered_sales[detail_columns].copy()
+            if selected_channels:
+                detail_df = detail_df[detail_df["channel"].isin(selected_channels)]
+            detail_df = detail_df.sort_values("date", ascending=False)
+            detail_df["gross_margin"] = (
+                detail_df["gross_profit"]
+                / detail_df["sales_amount"].replace(0, pd.NA)
+            ).fillna(0.0)
+            detail_df = detail_df.rename(
+                columns={
+                    "date": "日付",
+                    "store": "店舗",
+                    "category": "カテゴリ",
+                    "region": "地域",
+                    "channel": "チャネル",
+                    "product": "商品",
+                    "sales_amount": "売上",
+                    "gross_profit": "粗利",
+                    "sales_qty": "販売数量",
+                    "gross_margin": "粗利率",
+                }
+            )
+
+        export_df = detail_df
+        download_cols = st.columns(2)
+        with download_cols[0]:
+            report.csv_download(
+                "売上データをCSV出力",
+                export_df,
+                file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}_{filters.end_date:%Y%m%d}.csv",
+            )
+        with download_cols[1]:
+            report.pdf_download(
+                "売上データをPDF出力",
+                "売上サマリー",
+                export_df,
+                file_name=f"matsuya_sales_{filters.start_date:%Y%m%d}.pdf",
+            )
+
+        if export_df.empty:
+            st.info("選択した条件に該当する売上明細がありません。")
+        else:
+            st.dataframe(
+                export_df.style.format(
+                    {
+                        "売上": "{:,.0f}",
+                        "粗利": "{:,.0f}",
+                        "販売数量": "{:,.1f}",
+                        "粗利率": "{:.1%}",
+                    }
+                ),
+                use_container_width=True,
+            )
 
 def render_products_tab(
     sales_df: pd.DataFrame,
@@ -1793,6 +1839,7 @@ def render_profitability_tab(
         if not trend_comparison_df.empty
         else pd.DataFrame(columns=profit_trend_df.columns)
     )
+    profit_trend_fig: Optional[go.Figure] = None
     if "store" in edited_df.columns and store_choice != transformers.ALL_STORES:
         fixed_scope = edited_df[edited_df["store"] == store_choice]
     else:
@@ -1827,7 +1874,41 @@ def render_profitability_tab(
             - comparison_trend_df["allocated_fixed"]
         )
 
-    st.subheader("粗利・営業利益トレンド")
+    ranking_df = pnl_df.sort_values("sales_amount", ascending=False)
+    comparison_fig = go.Figure()
+    metric_config = [
+        ("sales_amount", "売上", colors["primary"]),
+        ("gross_profit", "粗利", colors["accent"]),
+        ("operating_profit", "営業利益", _adjust_hex_color(colors["accent"], -0.2)),
+    ]
+    stores_display = ranking_df.get("store", pd.Series(dtype=str)).fillna("-")
+    for column, label, color in metric_config:
+        if column not in ranking_df:
+            continue
+        comparison_fig.add_trace(
+            go.Bar(
+                y=stores_display.tolist(),
+                x=ranking_df[column].astype(float).tolist(),
+                name=label,
+                orientation="h",
+                marker_color=color,
+                hovertemplate=f"店舗: %{{y}}<br>{label}: %{{x:,.0f}} 円<extra></extra>",
+            )
+        )
+    comparison_fig.update_layout(
+        barmode="group",
+        yaxis=dict(autorange="reversed", title="店舗"),
+        xaxis=dict(title="金額（円）"),
+        legend=dict(
+            title="指標",
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1,
+        ),
+    )
+
     if not profit_trend_df.empty:
         profit_trend_fig = go.Figure()
         profit_trend_fig.add_trace(
@@ -1888,48 +1969,19 @@ def render_profitability_tab(
                 x=1,
             ),
         )
-        st.plotly_chart(profit_trend_fig, use_container_width=True)
-    else:
-        st.info("利益トレンドを表示できるデータがありません。")
 
-    ranking_df = pnl_df.sort_values("sales_amount", ascending=False)
-    comparison_fig = go.Figure()
-    metric_config = [
-        ("sales_amount", "売上", colors["primary"]),
-        ("gross_profit", "粗利", colors["accent"]),
-        ("operating_profit", "営業利益", _adjust_hex_color(colors["accent"], -0.2)),
-    ]
-    stores_display = ranking_df.get("store", pd.Series(dtype=str)).fillna("-")
-    for column, label, color in metric_config:
-        if column not in ranking_df:
-            continue
-        comparison_fig.add_trace(
-            go.Bar(
-                y=stores_display.tolist(),
-                x=ranking_df[column].astype(float).tolist(),
-                name=label,
-                orientation="h",
-                marker_color=color,
-                hovertemplate=f"店舗: %{{y}}<br>{label}: %{{x:,.0f}} 円<extra></extra>",
-            )
-        )
-    comparison_fig.update_layout(
-        barmode="group",
-        yaxis=dict(autorange="reversed", title="店舗"),
-        xaxis=dict(title="金額（円）"),
-        legend=dict(
-            title="指標",
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1,
-        ),
-    )
+    trend_cols = st.columns([3, 2], gap="large")
+    with trend_cols[0]:
+        st.subheader("粗利・営業利益トレンド")
+        if profit_trend_fig is not None:
+            st.plotly_chart(profit_trend_fig, use_container_width=True)
+        else:
+            st.info("利益トレンドを表示できるデータがありません。")
 
-    st.subheader("店舗別売上・利益比較")
-    st.caption("棒の長さで店舗ごとの売上・利益規模を比較できます。")
-    st.plotly_chart(comparison_fig, use_container_width=True)
+    with trend_cols[1]:
+        st.subheader("店舗別売上・利益比較")
+        st.caption("棒の長さで店舗ごとの売上・利益規模を比較できます。")
+        st.plotly_chart(comparison_fig, use_container_width=True)
 
     has_store_column = "store" in edited_df.columns
     if has_store_column:
@@ -2053,8 +2105,12 @@ def render_profitability_tab(
         )
 
     st.subheader("固定費内訳")
-    st.plotly_chart(cost_chart, use_container_width=True)
-    st.dataframe(breakdown_df, use_container_width=True)
+    cost_cols = st.columns([3, 2], gap="large")
+    with cost_cols[0]:
+        st.plotly_chart(cost_chart, use_container_width=True)
+    with cost_cols[1]:
+        with st.expander("費目別金額", expanded=False):
+            st.dataframe(breakdown_df, use_container_width=True)
 
     styled = focused_df.style.format(
         {
@@ -2072,8 +2128,8 @@ def render_profitability_tab(
         axis=0,
     )
 
-    st.subheader("損益明細")
-    st.dataframe(styled, use_container_width=True)
+    with st.expander("損益明細を表示", expanded=False):
+        st.dataframe(styled, use_container_width=True)
 
     if navigate is not None:
         st.info("シミュレーションで目標利益を検討できます。")
@@ -2223,15 +2279,24 @@ def render_inventory_tab(
     avg_turnover = float(turnover_df["turnover"].mean()) if not turnover_df.empty else 0.0
 
     shortage_products = advice_df[advice_df["stock_status"] == "在庫切れ"]["product"].dropna().tolist()
-    if stockouts > stockout_threshold and shortage_products:
+    if stockouts > 0 and shortage_products:
         highlight = shortage_products[0]
         if len(shortage_products) > 1:
             highlight += f" 他{len(shortage_products) - 1}件"
-        render_guided_message(
-            "stock_alert",
-            message_kwargs={"highlight": highlight},
-            action={"on_click": _focus_stockouts, "key": "stockout-alert-action"},
-        )
+        warning_cols = st.columns([3, 1], gap="medium")
+        with warning_cols[0]:
+            render_guided_message(
+                "inventory_warning",
+                message_kwargs={"summary": highlight},
+            )
+        with warning_cols[1]:
+            warning_cols[1].button(
+                "発注リストを表示",
+                key="inventory-order-button",
+                on_click=_focus_stockouts,
+                use_container_width=True,
+            )
+            warning_cols[1].metric("欠品数", f"{stockouts}件")
 
     _render_kpi_cards(
         [
@@ -2317,7 +2382,10 @@ def render_inventory_tab(
     elif focus_mode == "excess":
         focused_advice = focused_advice[focused_advice["stock_status"] == "在庫過多"]
 
-    with st.expander("在庫推定表", expanded=False):
+    with st.expander(
+        "発注リスト・在庫推定表",
+        expanded=state.get("focus") == "stockout",
+    ):
         if focused_advice.empty:
             st.info("該当する在庫データがありません。")
         else:
@@ -2378,17 +2446,29 @@ def render_data_management_tab(
             }
         render_guided_message("empty", action=action)
 
-    invalid_results = [
-        result
-        for result in validation_results.values()
+    invalid_items = [
+        (name, result)
+        for name, result in validation_results.items()
         if result is not None and not result.valid
     ]
-    if invalid_results:
-        first_error = invalid_results[0]
+    if invalid_items:
+        dataset_key, first_error = invalid_items[0]
         reason = "フォーマットエラー"
         if first_error.errors is not None and not first_error.errors.empty:
             reason = str(first_error.errors.iloc[0]["内容"])
-        render_guided_message("error", message_kwargs={"reason": reason})
+        template_bytes = templates.get(dataset_key)
+        action: Optional[Dict[str, object]] = None
+        if template_bytes:
+            action = {
+                "type": "download",
+                "data": template_bytes,
+                "file_name": f"{dataset_key}_template.csv",
+            }
+        render_guided_message(
+            "file_format_error",
+            message_kwargs={"reason": reason},
+            action=action,
+        )
     elif validation_results:
         updated_at = st.session_state.get("last_data_update", datetime.now())
         render_guided_message(
@@ -2993,7 +3073,7 @@ def render_cash_tab(
             key="simulation_scenario_name",
         )
 
-        if st.button("シナリオを保存", key="save_simulation_scenario"):
+        if st.button("シナリオ保存", key="save_simulation_scenario"):
             scenario = {
                 "name": scenario_name,
                 "gross_margin": gross_margin,
@@ -3006,7 +3086,11 @@ def render_cash_tab(
             scenarios = st.session_state.setdefault("saved_scenarios", [])
             scenarios.append(scenario)
             st.session_state["simulation_scenario_name"] = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
-            st.success("シナリオを保存しました。")
+            message_config = MESSAGE_DICTIONARY.get("simulation_saved", {})
+            toast_message = message_config.get(
+                "message", "シミュレーション結果を保存しました。"
+            )
+            st.toast(toast_message)
 
     saved_scenarios = st.session_state.setdefault("saved_scenarios", [])
     with saved_col:

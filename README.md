@@ -4,6 +4,7 @@
 
 - [松屋向け「計数管理」Streamlitアプリ設計書](docs/streamlit_design.md)
 - [Phase 2 情報設計・導線再設計ガイド](docs/phase2_information_architecture.md)
+- [Phase 3 長期的改善ロードマップ](docs/phase3_strategic_enhancement.md)
 
 ## Streamlitアプリ概要
 

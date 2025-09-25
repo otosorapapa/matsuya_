@@ -13,6 +13,7 @@ from pandas.tseries.offsets import MonthEnd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+from streamlit.delta_generator import DeltaGenerator
 from streamlit_plotly_events import plotly_events
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 st.set_page_config(page_title="松屋 計数管理ダッシュボード", layout="wide")
+
+MAIN_TAB_KEY = "main_active_tab"
+MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -551,6 +555,32 @@ def _inject_global_styles() -> None:
         .kpi-card .target.negative {{
             color: {colors['error']};
         }}
+        .kpi-card-wrapper {{
+            position: relative;
+            cursor: pointer;
+        }}
+        .kpi-card-wrapper > div[data-testid="stButton"] {{
+            position: absolute;
+            inset: 0;
+            z-index: 2;
+        }}
+        .kpi-card-wrapper > div[data-testid="stButton"] button {{
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+            padding: 0;
+        }}
+        .kpi-card-wrapper .kpi-card {{
+            pointer-events: none;
+        }}
+        .kpi-card-link {{
+            text-decoration: none;
+            display: block;
+        }}
+        .kpi-card-link .kpi-card {{
+            pointer-events: none;
+        }}
         .alert-box {{
             background: { _adjust_hex_color(colors['error'], 0.75) };
             border: 1px solid { _adjust_hex_color(colors['error'], 0.4) };
@@ -661,6 +691,18 @@ def _compute_growth(current: float, previous: Optional[float]) -> Optional[float
     return (current - previous) / previous
 
 
+def _is_tab_active(tab: DeltaGenerator) -> bool:
+    parent = getattr(tab, "_parent", None)
+    active = getattr(parent, "_active_dg", None)
+    main = getattr(tab, "_main_dg", None)
+    return active is not None and main is not None and active == main
+
+
+def _activate_main_tab(tab_name: str) -> None:
+    st.session_state[MAIN_TAB_KEY] = tab_name
+    st.experimental_rerun()
+
+
 def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
     if not cards:
         return
@@ -686,8 +728,7 @@ def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
         elif target_diff < 0:
             classes.append("caution")
 
-        card_container = column.container()
-        card_container.markdown(
+        card_html = (
             f"""
             <div class="{' '.join(classes)}">
                 <div class="label">{card.get('label', '')}</div>
@@ -695,28 +736,45 @@ def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
                 <div class="delta {delta_class}">{yoy_text}</div>
                 <div class="target {target_class}">目標差: {target_diff:+,.0f}{target_suffix}</div>
             </div>
-            """,
-            unsafe_allow_html=True,
+            """
         )
 
         action_conf = card.get("action") or {}
-        action_label = action_conf.get("label")
-        if action_label:
-            action_type = action_conf.get("type", "button")
+        action_type = action_conf.get("type", "button") if action_conf else None
+        card_container = column.container()
+
+        if action_conf and action_type != "link":
+            wrapper = card_container.container()
+            wrapper.markdown("<div class=\"kpi-card-wrapper\">", unsafe_allow_html=True)
+            interactive_area = wrapper.container()
             action_key = action_conf.get("key") or f"kpi-card-action-{card.get('label', '')}"
-            if action_type == "link":
-                url = action_conf.get("url")
-                if url:
-                    card_container.link_button(action_label, url, key=action_key)
-            else:
-                card_container.button(
-                    action_label,
-                    key=action_key,
-                    on_click=action_conf.get("on_click"),
-                    args=action_conf.get("args", ()),
-                    kwargs=action_conf.get("kwargs", {}),
-                    help=action_conf.get("help"),
+            interactive_area.button(
+                action_conf.get("label", " "),
+                key=action_key,
+                help=action_conf.get("help"),
+                on_click=action_conf.get("on_click"),
+                args=action_conf.get("args", ()),
+                kwargs=action_conf.get("kwargs", {}),
+                type=action_conf.get("button_type", "secondary"),
+                use_container_width=True,
+            )
+            interactive_area.markdown(card_html, unsafe_allow_html=True)
+            wrapper.markdown("</div>", unsafe_allow_html=True)
+        elif action_conf.get("type") == "link":
+            url = action_conf.get("url")
+            if url:
+                card_container.markdown(
+                    f"""
+                    <a class=\"kpi-card-link\" href=\"{url}\" target=\"_blank\">
+                        {card_html}
+                    </a>
+                    """,
+                    unsafe_allow_html=True,
                 )
+            else:
+                card_container.markdown(card_html, unsafe_allow_html=True)
+        else:
+            card_container.markdown(card_html, unsafe_allow_html=True)
 
 
 def _cash_flow_summary(sales_df: pd.DataFrame, inventory_df: pd.DataFrame) -> Dict[str, float]:
@@ -896,6 +954,11 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(total_sales, previous_sales),
                 "target_diff": total_sales - sales_target,
+                "action": {
+                    "key": "kpi-card-sales",
+                    "on_click": _activate_main_tab,
+                    "args": ("売上",),
+                },
             },
             {
                 "label": "営業利益",
@@ -903,6 +966,11 @@ def render_dashboard_tab(
                 "unit": "円",
                 "yoy": _compute_growth(operating_profit, previous_operating_profit),
                 "target_diff": operating_profit - profit_target,
+                "action": {
+                    "key": "kpi-card-profit",
+                    "on_click": _activate_main_tab,
+                    "args": ("粗利",),
+                },
             },
             {
                 "label": "資金残高",
@@ -912,6 +980,11 @@ def render_dashboard_tab(
                     cash_current["balance"], cash_previous.get("balance")
                 ),
                 "target_diff": cash_current["balance"] - cash_target,
+                "action": {
+                    "key": "kpi-card-cash",
+                    "on_click": _activate_main_tab,
+                    "args": ("資金",),
+                },
             },
         ]
     )
@@ -2913,6 +2986,7 @@ def render_cash_tab(
 def main() -> None:
     st.title("松屋 計数管理ダッシュボード")
     _inject_global_styles()
+    st.session_state.setdefault(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
 
     sample_files = data_loader.available_sample_files()
     templates = data_loader.available_templates()
@@ -3005,11 +3079,16 @@ def main() -> None:
     )
     st.session_state["latest_pnl_df"] = pnl_df
 
+    active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
+    if active_tab not in MAIN_TAB_LABELS:
+        active_tab = MAIN_TAB_LABELS[0]
     sales_tab, profit_tab, inventory_tab, cash_tab = st.tabs(
-        ["売上", "粗利", "在庫", "資金"]
+        MAIN_TAB_LABELS, default=active_tab
     )
 
     with sales_tab:
+        if _is_tab_active(sales_tab):
+            st.session_state[MAIN_TAB_KEY] = "売上"
         render_sales_tab(
             datasets["sales"],
             global_filters,
@@ -3023,6 +3102,8 @@ def main() -> None:
         st.session_state["latest_abc_df"] = abc_df
 
     with profit_tab:
+        if _is_tab_active(profit_tab):
+            st.session_state[MAIN_TAB_KEY] = "粗利"
         pnl_view = render_profitability_tab(
             filtered_sales,
             dashboard_comparison,
@@ -3032,6 +3113,8 @@ def main() -> None:
         st.session_state["latest_pnl_df"] = pnl_view
 
     with inventory_tab:
+        if _is_tab_active(inventory_tab):
+            st.session_state[MAIN_TAB_KEY] = "在庫"
         abc_df_cached = st.session_state.get("latest_abc_df")
         if abc_df_cached is None:
             abc_df_cached = products.abc_analysis(
@@ -3046,6 +3129,8 @@ def main() -> None:
         )
 
     with cash_tab:
+        if _is_tab_active(cash_tab):
+            st.session_state[MAIN_TAB_KEY] = "資金"
         pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
         render_cash_tab(
             filtered_sales,

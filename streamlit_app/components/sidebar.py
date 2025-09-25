@@ -178,6 +178,9 @@ def render_sidebar(
             "stockout_threshold": 0,
             "excess_threshold": 5,
             "deficit_threshold": -500000,
+            "notification_channel": "banner",
+            "notification_email": "",
+            "slack_webhook": "",
         },
     )
     st.sidebar.header("アラート設定")
@@ -199,11 +202,30 @@ def render_sidebar(
         step=50000,
         format="%d",
     )
+    notification_mode = st.sidebar.selectbox(
+        "通知表示", ["ページ上部バナー", "モーダル"],
+        index=0 if alert_state.get("notification_channel", "banner") == "banner" else 1,
+    )
+    notification_email = st.sidebar.text_input(
+        "通知メールアドレス",
+        value=alert_state.get("notification_email", ""),
+        help="アラートをメール通知する場合に入力してください。",
+    )
+    slack_webhook = st.sidebar.text_input(
+        "Slack Webhook URL",
+        value=alert_state.get("slack_webhook", ""),
+        help="Slack通知に利用するIncoming WebhookのURLを登録します。",
+    )
     alert_state.update(
         {
             "stockout_threshold": int(stockout_threshold),
             "excess_threshold": int(excess_threshold),
             "deficit_threshold": float(deficit_threshold),
+            "notification_channel": "banner"
+            if notification_mode == "ページ上部バナー"
+            else "modal",
+            "notification_email": notification_email,
+            "slack_webhook": slack_webhook,
         }
     )
 

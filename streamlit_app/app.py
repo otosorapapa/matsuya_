@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import pandas as pd
 from pandas.tseries.offsets import MonthEnd
@@ -110,6 +110,36 @@ DATA_SOURCE_LABELS = {
     "csv": "CSVアップロード",
     "api": "API連携",
 }
+
+_NumT = TypeVar("_NumT")
+
+
+def _coerce_number(
+    value: object, converter: Callable[[object], _NumT], default: _NumT
+) -> _NumT:
+    """Safely convert user-provided values to numeric types."""
+
+    if value is None:
+        return default
+    if isinstance(value, str) and not value.strip():
+        return default
+    try:
+        if pd.isna(value):  # type: ignore[arg-type]
+            return default
+    except TypeError:
+        pass
+    try:
+        return converter(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _coerce_int(value: object, default: int = 0) -> int:
+    return _coerce_number(value, int, default)
+
+
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    return _coerce_number(value, float, default)
 
 
 def _fallback_validator(
@@ -1084,8 +1114,8 @@ def _collect_alerts(
     default_period: Tuple[date, date],
 ) -> List[Dict[str, object]]:
     settings = alert_settings or {}
-    stockout_threshold = int(settings.get("stockout_threshold", 0))
-    excess_threshold = int(settings.get("excess_threshold", 0))
+    stockout_threshold = _coerce_int(settings.get("stockout_threshold"), 0)
+    excess_threshold = _coerce_int(settings.get("excess_threshold"), 0)
     deficit_threshold = settings.get("deficit_threshold")
 
     sales_df = datasets.get("sales", pd.DataFrame())
@@ -2174,7 +2204,7 @@ def render_profitability_tab(
         {"selected_store": transformers.ALL_STORES},
     )
     alert_settings = st.session_state.get("alert_settings", {})
-    deficit_threshold = float(alert_settings.get("deficit_threshold", 0))
+    deficit_threshold = _coerce_float(alert_settings.get("deficit_threshold"), 0.0)
     cost_columns = ["rent", "payroll", "utilities", "marketing", "other_fixed"]
     adjusted = st.session_state.get("adjusted_fixed_costs")
     base_costs = fixed_costs_df.copy()

@@ -13,7 +13,6 @@ from pandas.tseries.offsets import MonthEnd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit.delta_generator import DeltaGenerator
 from streamlit_plotly_events import plotly_events
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
@@ -29,10 +28,15 @@ from streamlit_app.integrations import IntegrationResult, available_providers, f
 logger = logging.getLogger(__name__)
 
 
-st.set_page_config(page_title="松屋 計数管理ダッシュボード", layout="wide")
+st.set_page_config(
+    page_title="松屋 計数管理ダッシュボード",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 MAIN_TAB_KEY = "main_active_tab"
 MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]
+PAGE_OPTIONS = ["ダッシュボード", "データ管理", "ヘルプ／設定"]
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -691,16 +695,29 @@ def _compute_growth(current: float, previous: Optional[float]) -> Optional[float
     return (current - previous) / previous
 
 
-def _is_tab_active(tab: DeltaGenerator) -> bool:
-    parent = getattr(tab, "_parent", None)
-    active = getattr(parent, "_active_dg", None)
-    main = getattr(tab, "_main_dg", None)
-    return active is not None and main is not None and active == main
-
-
 def _activate_main_tab(tab_name: str) -> None:
     st.session_state[MAIN_TAB_KEY] = tab_name
     st.experimental_rerun()
+
+
+def _render_analysis_navigation(active_label: str) -> str:
+    """Render the primary analysis navigation bar."""
+
+    st.markdown("### 主要分析セクション")
+    tab_bar = st.container()
+    with tab_bar:
+        columns = st.columns(len(MAIN_TAB_LABELS))
+        for column, label in zip(columns, MAIN_TAB_LABELS):
+            button_type = "primary" if label == active_label else "secondary"
+            if column.button(
+                label,
+                use_container_width=True,
+                key=f"main-nav-{label}",
+                type=button_type,
+            ):
+                active_label = label
+    st.divider()
+    return active_label
 
 
 def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
@@ -2412,9 +2429,44 @@ def render_data_management_tab(
                 data=content,
                 file_name=f"{key}_template.csv",
                 key=f"data-tab-template-{key}",
-            )
+    )
 
     import_dashboard.render_dashboard(validation_results, integration_result)
+
+
+def render_help_settings_page() -> None:
+    """Render the help and settings guidance page."""
+
+    st.markdown("### ヘルプ／設定")
+    st.caption(
+        "ダッシュボードの使い方と設定手順をまとめています。必要に応じてメンバーと共有してください。"
+    )
+
+    st.markdown("#### 基本操作")
+    st.markdown(
+        """
+        - 左サイドバーの「ページ切替」からダッシュボード／データ管理／ヘルプページを移動できます。
+        - ダッシュボードでは上部の共通コントロールで期間・店舗を変更すると、全ての分析セクションに反映されます。
+        - 主要分析セクション（売上・粗利・在庫・資金）は、上部のタブバーまたはサイドバーからいつでも切り替え可能です。
+        """
+    )
+
+    st.markdown("#### アラートと目標値の設定")
+    st.markdown(
+        """
+        - サイドバーの「アラート設定」で欠品数・過剰在庫数・赤字基準を更新できます。
+        - 設定値はセッション内で保持され、KGI/KPIカードに即時反映されます。
+        - 粗利ページでは固定費の調整やシミュレーション画面への遷移も行えます。
+        """
+    )
+
+    st.markdown("#### サポート")
+    st.markdown(
+        """
+        - データの取り込みフォーマットは「データ管理」ページのテンプレートをご確認ください。
+        - 追加のサポートが必要な場合は、社内システム管理者またはベンダー担当窓口までお問い合わせください。
+        """
+    )
 
 def render_cash_tab(
     sales_df: pd.DataFrame,
@@ -2989,6 +3041,7 @@ def main() -> None:
     st.title("松屋 計数管理ダッシュボード")
     _inject_global_styles()
     st.session_state.setdefault(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
+    st.session_state.setdefault("active_page", PAGE_OPTIONS[0])
 
     sample_files = data_loader.available_sample_files()
     templates = data_loader.available_templates()
@@ -3052,107 +3105,134 @@ def main() -> None:
     st.session_state["current_datasets"] = _copy_datasets(datasets)
     st.session_state["current_source"] = mode
 
+    stores = transformers.extract_stores(datasets["sales"])
+    categories = transformers.extract_categories(datasets["sales"])
+    regions = transformers.extract_regions(datasets["sales"])
+    channels = transformers.extract_channels(datasets["sales"])
+    default_period = _default_period(datasets["sales"])
     bounds = _dataset_bounds(datasets["sales"])
-    global_filters = render_global_filter_bar(
-        stores,
-        categories,
-        default_period=default_period,
-        bounds=bounds,
+
+    st.sidebar.header("ページ切替")
+    current_page = st.session_state.get("active_page", PAGE_OPTIONS[0])
+    page_choice = st.sidebar.radio(
+        "表示ページ",
+        PAGE_OPTIONS,
+        index=PAGE_OPTIONS.index(current_page)
+        if current_page in PAGE_OPTIONS
+        else 0,
+        key="page_selector",
     )
+    st.session_state["active_page"] = page_choice
 
-    filtered_sales = transformers.apply_filters(datasets["sales"], global_filters)
-    dashboard_comparison = _comparison_dataset(
-        datasets["sales"], global_filters, "previous_period"
-    )
+    if page_choice == "ダッシュボード":
+        active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
+        if active_tab not in MAIN_TAB_LABELS:
+            active_tab = MAIN_TAB_LABELS[0]
 
-
-
-    pnl_baseline = profitability.store_profitability(
-        filtered_sales,
-        datasets["fixed_costs"],
-    )
-
-    pnl_df = render_dashboard_tab(
-        filtered_sales,
-        dashboard_comparison,
-        global_filters,
-        datasets["fixed_costs"],
-        datasets["inventory"],
-    )
-    st.session_state["latest_pnl_df"] = pnl_df
-
-    active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
-    if active_tab not in MAIN_TAB_LABELS:
-        active_tab = MAIN_TAB_LABELS[0]
-    sales_tab, profit_tab, inventory_tab, cash_tab = st.tabs(
-        MAIN_TAB_LABELS, default=active_tab
-    )
-
-    with sales_tab:
-        if _is_tab_active(sales_tab):
-            st.session_state[MAIN_TAB_KEY] = "売上"
-        render_sales_tab(
-            datasets["sales"],
-            global_filters,
-            channels,
-            comparison_mode="yoy",
+        st.sidebar.subheader("主要分析セクション")
+        sidebar_tab = st.sidebar.radio(
+            "分析を選択",
+            MAIN_TAB_LABELS,
+            index=MAIN_TAB_LABELS.index(active_tab),
+            key="sidebar_analysis_selector",
         )
-        st.divider()
-        abc_df, _ = render_products_tab(
-            filtered_sales, dashboard_comparison, global_filters
-        )
-        st.session_state["latest_abc_df"] = abc_df
+        if sidebar_tab != active_tab:
+            active_tab = sidebar_tab
+            st.session_state[MAIN_TAB_KEY] = active_tab
 
-    with profit_tab:
-        if _is_tab_active(profit_tab):
-            st.session_state[MAIN_TAB_KEY] = "粗利"
-        pnl_view = render_profitability_tab(
+        header_container = st.container()
+        with header_container:
+            login_col, control_col = st.columns([1, 3])
+            login_name = st.session_state.get("login_user", "経営者A")
+            login_col.markdown(f"#### 👤 {login_name}")
+            with control_col:
+                global_filters = render_global_filter_bar(
+                    stores,
+                    categories,
+                    default_period=default_period,
+                    bounds=bounds,
+                )
+
+        filtered_sales = transformers.apply_filters(
+            datasets["sales"], global_filters
+        )
+        dashboard_comparison = _comparison_dataset(
+            datasets["sales"], global_filters, "previous_period"
+        )
+
+        pnl_baseline = profitability.store_profitability(
             filtered_sales,
-            dashboard_comparison,
             datasets["fixed_costs"],
-            global_filters,
-        )
-        st.session_state["latest_pnl_df"] = pnl_view
-
-    with inventory_tab:
-        if _is_tab_active(inventory_tab):
-            st.session_state[MAIN_TAB_KEY] = "在庫"
-        abc_df_cached = st.session_state.get("latest_abc_df")
-        if abc_df_cached is None:
-            abc_df_cached = products.abc_analysis(
-                filtered_sales, dashboard_comparison
-            )
-            st.session_state["latest_abc_df"] = abc_df_cached
-        render_inventory_tab(
-            filtered_sales,
-            datasets["inventory"],
-            abc_df_cached,
-            global_filters,
         )
 
-    with cash_tab:
-        if _is_tab_active(cash_tab):
-            st.session_state[MAIN_TAB_KEY] = "資金"
-        pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
-        render_cash_tab(
+        pnl_df = render_dashboard_tab(
             filtered_sales,
             dashboard_comparison,
-            datasets["inventory"],
-            pnl_for_cash,
             global_filters,
+            datasets["fixed_costs"],
+            datasets["inventory"],
         )
+        st.session_state["latest_pnl_df"] = pnl_df
 
-    st.divider()
-    integration_display = integration_result or st.session_state.get(
-        "latest_api_result"
-    )
-    render_data_management_tab(
-        validation_results,
-        integration_display,
-        baseline,
-        sample_files_for_ui,
-        templates,
-    )
+        active_tab = _render_analysis_navigation(active_tab)
+        st.session_state[MAIN_TAB_KEY] = active_tab
+        st.session_state["sidebar_analysis_selector"] = active_tab
+
+        if active_tab == "売上":
+            render_sales_tab(
+                datasets["sales"],
+                global_filters,
+                channels,
+                comparison_mode="yoy",
+            )
+            st.divider()
+            abc_df, _ = render_products_tab(
+                filtered_sales, dashboard_comparison, global_filters
+            )
+            st.session_state["latest_abc_df"] = abc_df
+        elif active_tab == "粗利":
+            pnl_view = render_profitability_tab(
+                filtered_sales,
+                dashboard_comparison,
+                datasets["fixed_costs"],
+                global_filters,
+            )
+            st.session_state["latest_pnl_df"] = pnl_view
+        elif active_tab == "在庫":
+            abc_df_cached = st.session_state.get("latest_abc_df")
+            if abc_df_cached is None:
+                abc_df_cached = products.abc_analysis(
+                    filtered_sales, dashboard_comparison
+                )
+                st.session_state["latest_abc_df"] = abc_df_cached
+            render_inventory_tab(
+                filtered_sales,
+                datasets["inventory"],
+                abc_df_cached,
+                global_filters,
+            )
+        elif active_tab == "資金":
+            pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
+            render_cash_tab(
+                filtered_sales,
+                dashboard_comparison,
+                datasets["inventory"],
+                pnl_for_cash,
+                global_filters,
+            )
+    elif page_choice == "データ管理":
+        integration_display = integration_result or st.session_state.get(
+            "latest_api_result"
+        )
+        render_data_management_tab(
+            validation_results,
+            integration_display,
+            baseline,
+            sample_files_for_ui,
+            templates,
+        )
+    else:
+        render_help_settings_page()
 
 if __name__ == "__main__":
     main()

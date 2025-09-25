@@ -23,6 +23,7 @@ from streamlit_app import data_loader, rerun as trigger_rerun, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation
 from streamlit_app.components import import_dashboard, report, sidebar
 from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
+from streamlit_app.theme import inject_custom_css
 
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,8 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+inject_custom_css()
 
 MAIN_TAB_KEY = "main_active_tab"
 MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]

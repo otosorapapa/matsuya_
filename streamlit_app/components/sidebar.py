@@ -23,6 +23,34 @@ DATASET_LABELS = {
 }
 
 
+DATASET_COLUMN_SPEC = {
+    "sales": [
+        ("date", "日付 (YYYY-MM-DD)"),
+        ("store", "店舗名"),
+        ("category", "商品カテゴリ"),
+        ("product", "商品名"),
+        ("sales_amount", "売上金額"),
+        ("sales_qty", "販売数量"),
+        ("cogs_amount", "売上原価"),
+    ],
+    "inventory": [
+        ("store", "店舗名"),
+        ("product", "商品名"),
+        ("category", "カテゴリ"),
+        ("opening_stock", "期首在庫数"),
+        ("planned_purchase", "入荷予定数"),
+        ("safety_stock", "安全在庫数"),
+    ],
+    "fixed_costs": [
+        ("store", "店舗名 (任意)"),
+        ("rent", "家賃"),
+        ("utilities", "水道光熱費"),
+        ("labor", "人件費"),
+        ("other_costs", "その他固定費"),
+    ],
+}
+
+
 PERIOD_OPTIONS = {
     "日次": "daily",
     "週次": "weekly",
@@ -148,6 +176,10 @@ def render_sidebar(
         else:
             status_container.warning(f"{label}: 未アップロード")
     st.sidebar.caption("最新の取込状況を確認してから分析を進めてください。")
+
+    if st.sidebar.button("データ仕様", key="open_data_spec_button"):
+        st.session_state["show_data_spec_modal"] = True
+    show_data_spec_modal = st.session_state.get("show_data_spec_modal", False)
 
     with st.sidebar.expander("サンプルデータ・テンプレートをダウンロード"):
         for key, path in sample_files.items():
@@ -313,4 +345,6 @@ def render_sidebar(
         "export_csv": export_csv,
         "export_pdf": export_pdf,
         "alert_settings": alert_state,
+        "show_data_spec_modal": show_data_spec_modal,
+        "data_spec_columns": DATASET_COLUMN_SPEC,
     }

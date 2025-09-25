@@ -504,54 +504,54 @@ def _inject_global_styles() -> None:
     st.markdown(
         f"""
         <style>
-        .kpi-card {
+        .kpi-card {{
             background: #ffffff;
             border-radius: 12px;
             padding: 1.1rem 1.2rem;
             box-shadow: 0 2px 4px rgba(15, 23, 42, 0.08);
             margin-bottom: 0.8rem;
-            }
-        .kpi-card.alert {
+            }}
+        .kpi-card.alert {{
             background: { _adjust_hex_color(colors['error'], 0.75) };
             border: 1px solid { _adjust_hex_color(colors['error'], 0.4) };
-        }
-        .kpi-card.caution {
+        }}
+        .kpi-card.caution {{
             background: { _adjust_hex_color(colors['primary'], 0.85) };
             border: 1px solid { _adjust_hex_color(colors['primary'], 0.55) };
-        }
-        .kpi-card .label {
+        }}
+        .kpi-card .label {{
             font-size: 0.9rem;
             color: #6b7280;
             margin-bottom: 0.4rem;
-        }
-        .kpi-card .value {
+        }}
+        .kpi-card .value {{
             font-size: 1.6rem;
             font-weight: 600;
             color: {colors['text']};
-        }
-        .kpi-card .delta {
+        }}
+        .kpi-card .delta {{
             font-size: 0.9rem;
             font-weight: 500;
             margin-top: 0.2rem;
-        }
-        .kpi-card .delta.positive {
+        }}
+        .kpi-card .delta.positive {{
             color: {colors['success']};
-        }
-        .kpi-card .delta.negative {
+        }}
+        .kpi-card .delta.negative {{
             color: {colors['error']};
-        }
-        .kpi-card .target {
+        }}
+        .kpi-card .target {{
             font-size: 0.85rem;
             margin-top: 0.3rem;
             color: #4b5563;
-        }
-        .kpi-card .target.positive {
+        }}
+        .kpi-card .target.positive {{
             color: {colors['success']};
-        }
-        .kpi-card .target.negative {
+        }}
+        .kpi-card .target.negative {{
             color: {colors['error']};
-        }
-        .alert-box {
+        }}
+        .alert-box {{
             background: { _adjust_hex_color(colors['error'], 0.75) };
             border: 1px solid { _adjust_hex_color(colors['error'], 0.4) };
             border-radius: 12px;
@@ -561,22 +561,22 @@ def _inject_global_styles() -> None:
             align-items: center;
             color: #b42318;
             gap: 1rem;
-        }
-        .alert-box.success {
+        }}
+        .alert-box.success {{
             background: { _adjust_hex_color(colors['success'], 0.75) };
             border-color: { _adjust_hex_color(colors['success'], 0.4) };
             color: {colors['success']};
-        }
-        .filter-bar {
+        }}
+        .filter-bar {{
             background: {colors['neutral']};
             border: 1px solid { _adjust_hex_color(colors['neutral'], -0.15) };
             border-radius: 12px;
             padding: 0.9rem 1.1rem;
             margin-bottom: 1rem;
-        }
-        .quick-menu button {
+        }}
+        .quick-menu button {{
             width: 100%;
-        }
+        }}
         </style>
         """,
         unsafe_allow_html=True,

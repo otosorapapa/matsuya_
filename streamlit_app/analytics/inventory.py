@@ -11,6 +11,28 @@ DEFAULT_ROLLING_WINDOW = 7
 DEFAULT_SAFETY_BUFFER_DAYS = 3
 
 
+def _coerce_float(value: object, default: float = 0.0) -> float:
+    """Safely convert ``value`` to ``float`` while handling ``pd.NA`` values."""
+
+    if pd.isna(value):
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _coerce_int(value: object, default: int) -> int:
+    """Safely convert ``value`` to ``int`` with sensible fallbacks."""
+
+    if pd.isna(value):
+        return int(default)
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _resolve_date_range(
     sales: pd.DataFrame, start: Optional[date], end: Optional[date]
 ) -> Tuple[pd.Timestamp, pd.Timestamp]:
@@ -59,8 +81,8 @@ def inventory_overview(
 
     working_sales = working_sales.dropna(subset=["date"]).copy()
 
-    window = max(int(rolling_window), 1)
-    buffer_days = max(int(safety_buffer_days), 0)
+    window = max(_coerce_int(rolling_window, DEFAULT_ROLLING_WINDOW), 1)
+    buffer_days = max(_coerce_int(safety_buffer_days, DEFAULT_SAFETY_BUFFER_DAYS), 0)
 
     period_start, period_end = _resolve_date_range(working_sales, start_date, end_date)
 
@@ -76,9 +98,9 @@ def inventory_overview(
     for _, row in inventory.iterrows():
         store_name = row.get("store")
         product_name = row.get("product")
-        opening = float(row.get("opening_stock", 0) or 0)
-        purchase = float(row.get("planned_purchase", 0) or 0)
-        safety_stock = float(row.get("safety_stock", 0) or 0)
+        opening = _coerce_float(row.get("opening_stock", 0))
+        purchase = _coerce_float(row.get("planned_purchase", 0))
+        safety_stock = _coerce_float(row.get("safety_stock", 0))
         available = max(opening + purchase, 0)
 
         product_sales = daily_sales[

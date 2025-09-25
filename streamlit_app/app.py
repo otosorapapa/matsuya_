@@ -3176,7 +3176,6 @@ def main() -> None:
 
         active_tab = _render_analysis_navigation(active_tab)
         st.session_state[MAIN_TAB_KEY] = active_tab
-        st.session_state["sidebar_analysis_selector"] = active_tab
 
         if active_tab == "売上":
             render_sales_tab(

@@ -1,9 +1,9 @@
 """Sidebar UI component for the Streamlit dashboard."""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import streamlit as st
 
@@ -65,6 +65,7 @@ def render_sidebar(
     templates: Dict[str, bytes],
     providers: List[str],
     show_filters: bool = True,
+    dataset_status: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> Dict[str, object]:
     st.sidebar.header("データソース")
     mode_label = st.sidebar.radio("連携方法", ["CSVアップロード", "API連携"])
@@ -113,6 +114,40 @@ def render_sidebar(
             )
         else:
             st.sidebar.warning("利用可能なAPI連携先が設定されていません。CSVをアップロードしてください。")
+
+    status_map = dataset_status or {}
+    st.sidebar.subheader("データ状態")
+    status_container = st.sidebar.container()
+    status_order = ["sales", "inventory", "fixed_costs"]
+    for dataset in status_order:
+        info = status_map.get(dataset, {})
+        label = DATASET_LABELS.get(dataset, dataset)
+        status = info.get("status", "missing")
+        rows = int(info.get("rows", 0) or 0)
+        source_label = info.get("source_label") or info.get("message") or "未アップロード"
+        updated_at = info.get("updated_at")
+        timestamp_text = None
+        if isinstance(updated_at, datetime):
+            timestamp_text = updated_at.strftime("%Y-%m-%d %H:%M")
+        elif isinstance(updated_at, date):
+            timestamp_text = updated_at.strftime("%Y-%m-%d")
+        elif isinstance(updated_at, str):
+            timestamp_text = updated_at
+        if status == "ready":
+            detail = source_label
+            if rows:
+                detail += f"（{rows:,}行）"
+            if timestamp_text:
+                detail += f"｜更新 {timestamp_text}"
+            status_container.success(f"{label}: {detail}")
+        elif status == "error":
+            message = info.get("message") or info.get("error") or "取込エラーが発生しました。"
+            if timestamp_text:
+                message += f"（{timestamp_text}）"
+            status_container.error(f"{label}: {message}")
+        else:
+            status_container.warning(f"{label}: 未アップロード")
+    st.sidebar.caption("最新の取込状況を確認してから分析を進めてください。")
 
     with st.sidebar.expander("サンプルデータ・テンプレートをダウンロード"):
         for key, path in sample_files.items():

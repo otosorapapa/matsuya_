@@ -29,6 +29,13 @@ from streamlit_app.theme import inject_custom_css
 logger = logging.getLogger(__name__)
 
 
+def _set_state_and_rerun(key: str, value: object) -> None:
+    """Update ``st.session_state`` and trigger a rerun immediately."""
+
+    st.session_state[key] = value
+    trigger_rerun()
+
+
 st.set_page_config(
     page_title="松屋 計数管理ダッシュボード",
     layout="wide",
@@ -267,9 +274,9 @@ def _ensure_dataset_metadata(
 ) -> Dict[str, Dict[str, object]]:
     """Synchronise dataset metadata stored in ``st.session_state``."""
 
-    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
-        DATASET_METADATA_KEY, {}
-    )
+    if DATASET_METADATA_KEY not in st.session_state:
+        st.session_state[DATASET_METADATA_KEY] = {}
+    metadata: Dict[str, Dict[str, object]] = st.session_state[DATASET_METADATA_KEY]
     default_label = DATA_SOURCE_LABELS.get(default_source, default_source)
     for name, df in datasets.items():
         rows = int(len(df)) if df is not None else 0
@@ -301,9 +308,9 @@ def _update_metadata_from_uploads(
 
     if not uploads:
         return
-    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
-        DATASET_METADATA_KEY, {}
-    )
+    if DATASET_METADATA_KEY not in st.session_state:
+        st.session_state[DATASET_METADATA_KEY] = {}
+    metadata: Dict[str, Dict[str, object]] = st.session_state[DATASET_METADATA_KEY]
     timestamp = datetime.now()
     any_success = False
     for dataset, upload in uploads.items():
@@ -346,9 +353,9 @@ def _update_metadata_from_integration(result: Optional[IntegrationResult]) -> No
 
     if result is None:
         return
-    metadata: Dict[str, Dict[str, object]] = st.session_state.setdefault(
-        DATASET_METADATA_KEY, {}
-    )
+    if DATASET_METADATA_KEY not in st.session_state:
+        st.session_state[DATASET_METADATA_KEY] = {}
+    metadata: Dict[str, Dict[str, object]] = st.session_state[DATASET_METADATA_KEY]
     timestamp = result.retrieved_at
     for dataset, dataframe in result.datasets.items():
         rows = int(len(dataframe)) if dataframe is not None else 0
@@ -973,7 +980,9 @@ def _activate_main_tab(tab_name: str) -> None:
 
 
 def _activate_inventory_focus(focus: str) -> None:
-    tab_state = st.session_state.setdefault("inventory_tab_state", {})
+    if "inventory_tab_state" not in st.session_state:
+        st.session_state["inventory_tab_state"] = {}
+    tab_state = st.session_state["inventory_tab_state"]
     tab_state["focus"] = focus
     st.session_state[MAIN_TAB_KEY] = "在庫"
     trigger_rerun()
@@ -1214,8 +1223,10 @@ def render_alert_center(
     settings = alert_settings or {}
     channel = settings.get("notification_channel", "banner")
     total_alerts = int(sum(alert.get("count", 0) or 0 for alert in alerts))
+    if "show_alert_modal" not in st.session_state:
+        st.session_state["show_alert_modal"] = False
     if total_alerts == 0:
-        st.session_state.pop("show_alert_modal", None)
+        st.session_state["show_alert_modal"] = False
     contact_info = []
     email = settings.get("notification_email")
     slack_webhook = settings.get("slack_webhook")
@@ -1228,14 +1239,20 @@ def render_alert_center(
     container = st.container()
 
     if channel == "modal":
+        def _open_alert_modal() -> None:
+            _set_state_and_rerun("show_alert_modal", True)
+
+        def _close_alert_modal() -> None:
+            _set_state_and_rerun("show_alert_modal", False)
+
         open_key = "alert_center_modal_open"
         if total_alerts > 0:
-            if container.button(
+            container.button(
                 f"🔔 アラートを確認 ({total_alerts})",
                 key=open_key,
                 type="primary",
-            ):
-                st.session_state["show_alert_modal"] = True
+                on_click=_open_alert_modal,
+            )
         else:
             container.success("現在重大なアラートはありません。")
 
@@ -1261,8 +1278,11 @@ def render_alert_center(
                             args=action.get("args", ()),
                             key=f"alert-action-modal-{alert.get('title')}",
                         )
-                if st.button("閉じる", key="close-alert-modal"):
-                    st.session_state["show_alert_modal"] = False
+                st.button(
+                    "閉じる",
+                    key="close-alert-modal",
+                    on_click=_close_alert_modal,
+                )
         return
 
     with container:
@@ -1314,17 +1334,22 @@ def render_global_filter_bar(
     default_period: Tuple[date, date],
     bounds: Tuple[date, date],
 ) -> transformers.FilterState:
-    saved_store = st.session_state.setdefault("selected_store", transformers.ALL_STORES)
-    saved_range = st.session_state.setdefault("date_range", default_period)
-    saved_period = st.session_state.setdefault("selected_period", saved_range)
-    state = st.session_state.setdefault(
-        GLOBAL_FILTER_KEY,
-        {
+    if "selected_store" not in st.session_state:
+        st.session_state["selected_store"] = transformers.ALL_STORES
+    saved_store = st.session_state["selected_store"]
+    if "date_range" not in st.session_state:
+        st.session_state["date_range"] = default_period
+    saved_range = st.session_state["date_range"]
+    if "selected_period" not in st.session_state:
+        st.session_state["selected_period"] = saved_range
+    saved_period = st.session_state["selected_period"]
+    if GLOBAL_FILTER_KEY not in st.session_state:
+        st.session_state[GLOBAL_FILTER_KEY] = {
             "preset": "直近30日",
             "custom_range": saved_period,
             "store": saved_store,
-        },
-    )
+        }
+    state = st.session_state[GLOBAL_FILTER_KEY]
 
     st.markdown("### 共通コントロール")
     with st.container():
@@ -1520,15 +1545,14 @@ def render_sales_tab(
     colors = _resolve_theme_colors()
     st.markdown("### 売上分析")
 
-    state = st.session_state.setdefault(
-        "sales_tab_state",
-        {
+    if "sales_tab_state" not in st.session_state:
+        st.session_state["sales_tab_state"] = {
             "channel": transformers.ALL_CHANNELS,
             "granularity": "monthly",
             "breakdown": "store",
             "comparison": comparison_mode,
-        },
-    )
+        }
+    state = st.session_state["sales_tab_state"]
 
     channel_options = (
         [transformers.ALL_CHANNELS, *channels]
@@ -1977,10 +2001,11 @@ def render_products_tab(
 
     category_options = sorted(sales_df["category"].dropna().unique().tolist())
     category_choices = [transformers.ALL_CATEGORIES, *category_options]
-    state = st.session_state.setdefault(
-        "products_tab_state",
-        {"category": transformers.ALL_CATEGORIES},
-    )
+    if "products_tab_state" not in st.session_state:
+        st.session_state["products_tab_state"] = {
+            "category": transformers.ALL_CATEGORIES
+        }
+    state = st.session_state["products_tab_state"]
     selected_category = st.selectbox(
         "カテゴリ",
         category_choices,
@@ -2220,10 +2245,11 @@ def render_profitability_tab(
     colors = _resolve_theme_colors()
     st.markdown("### 利益管理")
 
-    state = st.session_state.setdefault(
-        "profit_tab_state",
-        {"selected_store": transformers.ALL_STORES},
-    )
+    if "profit_tab_state" not in st.session_state:
+        st.session_state["profit_tab_state"] = {
+            "selected_store": transformers.ALL_STORES
+        }
+    state = st.session_state["profit_tab_state"]
     alert_settings = st.session_state.get("alert_settings", {})
     deficit_threshold = _coerce_float(alert_settings.get("deficit_threshold"), 0.0)
     cost_columns = ["rent", "payroll", "utilities", "marketing", "other_fixed"]
@@ -2254,7 +2280,9 @@ def render_profitability_tab(
     )
 
     def _focus_profit_store(store_name: str) -> None:
-        tab_state = st.session_state.setdefault("profit_tab_state", {})
+        if "profit_tab_state" not in st.session_state:
+            st.session_state["profit_tab_state"] = {}
+        tab_state = st.session_state["profit_tab_state"]
         tab_state["selected_store"] = store_name
 
     negative = pnl_df[pnl_df["operating_profit"] <= deficit_threshold]
@@ -2654,8 +2682,12 @@ def render_profitability_tab(
 
     if navigate is not None:
         st.info("シミュレーションで目標利益を検討できます。")
-        if st.button("シミュレーションを開く", key="profit_to_sim"):
-            navigate("simulation")
+        st.button(
+            "シミュレーションを開く",
+            key="profit_to_sim",
+            on_click=navigate,
+            args=("simulation",),
+        )
 
     return pnl_df
 def render_inventory_tab(
@@ -2672,14 +2704,13 @@ def render_inventory_tab(
     store_choices = [transformers.ALL_STORES, *store_options]
     category_choices = [transformers.ALL_CATEGORIES, *category_options]
 
-    state = st.session_state.setdefault(
-        "inventory_tab_state",
-        {
+    if "inventory_tab_state" not in st.session_state:
+        st.session_state["inventory_tab_state"] = {
             "store": filters.store,
             "category": filters.category,
             "focus": "all",
-        },
-    )
+        }
+    state = st.session_state["inventory_tab_state"]
     alert_settings = st.session_state.get("alert_settings", {})
     stockout_threshold = int(alert_settings.get("stockout_threshold", 0))
     excess_threshold = int(alert_settings.get("excess_threshold", 5))
@@ -2784,7 +2815,9 @@ def render_inventory_tab(
         return aggregated
 
     def _focus_stockouts() -> None:
-        tab_state = st.session_state.setdefault("inventory_tab_state", {})
+        if "inventory_tab_state" not in st.session_state:
+            st.session_state["inventory_tab_state"] = {}
+        tab_state = st.session_state["inventory_tab_state"]
         tab_state["focus"] = "stockout"
 
     with st.container():
@@ -3324,7 +3357,9 @@ def render_data_management_tab(
             .unique()
             .tolist()
         )
-        mapping_state = st.session_state.setdefault("category_mapping", {})
+        if "category_mapping" not in st.session_state:
+            st.session_state["category_mapping"] = {}
+        mapping_state = st.session_state["category_mapping"]
         if raw_categories:
             st.markdown("##### カテゴリマッピング")
             options = sorted({*raw_categories, *baseline_categories})
@@ -3396,7 +3431,7 @@ def render_data_management_tab(
                 key=f"data_tab_choice_{file.name}_{idx}",
             )
             mapping[label_to_key[choice]] = file
-        if st.button("アップロードを取り込む", key="data_tab_apply_upload"):
+        def _apply_uploaded_files() -> None:
             new_datasets, validations = _handle_csv_uploads(mapping, baseline)
             st.session_state["current_datasets"] = new_datasets
             st.session_state["data_tab_validations"] = validations
@@ -3406,6 +3441,12 @@ def render_data_management_tab(
             _ensure_dataset_metadata(new_datasets, default_source="csv")
             st.success("アップロードを反映しました。")
             trigger_rerun()
+
+        st.button(
+            "アップロードを取り込む",
+            key="data_tab_apply_upload",
+            on_click=_apply_uploaded_files,
+        )
 
     with st.expander("テンプレートをダウンロード", expanded=False):
         for key, content in templates.items():
@@ -3767,7 +3808,9 @@ def render_cash_tab(
     default_margin = float(min(max(default_margin, 0.1), 0.8))
     default_fixed_cost = float(pnl_df["total_fixed_cost"].sum())
 
-    inputs_state = st.session_state.setdefault("cash_flow_inputs", {})
+    if "cash_flow_inputs" not in st.session_state:
+        st.session_state["cash_flow_inputs"] = {}
+    inputs_state = st.session_state["cash_flow_inputs"]
     previous_margin_default = inputs_state.get("gross_margin_default")
     margin_default = float(round(default_margin, 2))
     if "gross_margin" not in inputs_state:
@@ -3790,8 +3833,10 @@ def render_cash_tab(
         inputs_state["fixed_cost"] = fixed_default
     inputs_state["fixed_cost_default"] = fixed_default
 
-    inputs_state.setdefault("target_profit", 5_000_000.0)
-    inputs_state.setdefault("preset", "500万円")
+    if "target_profit" not in inputs_state:
+        inputs_state["target_profit"] = 5_000_000.0
+    if "preset" not in inputs_state:
+        inputs_state["preset"] = "500万円"
 
     preset_options = {"500万円": 5_000_000.0, "1,000万円": 10_000_000.0, "カスタム": None}
     preset_keys = list(preset_options.keys())
@@ -3985,19 +4030,27 @@ def render_cash_tab(
 
         st.markdown("#### シナリオ詳細")
 
-        default_name = st.session_state.setdefault(
-            "simulation_scenario_name",
-            f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
-        )
+        if "simulation_scenario_name" not in st.session_state:
+            st.session_state["simulation_scenario_name"] = (
+                f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+            )
+        scenario_name_default = st.session_state["simulation_scenario_name"]
         scenario_name = st.text_input(
             "シナリオ名",
-            key="simulation_scenario_name",
-            value=default_name,
+            key="_simulation_scenario_name_widget",
+            value=scenario_name_default,
         )
+        st.session_state["simulation_scenario_name"] = scenario_name
 
-        if st.button("シナリオ保存", key="save_simulation_scenario"):
+        if "saved_scenarios" not in st.session_state:
+            st.session_state["saved_scenarios"] = []
+
+        def _save_scenario() -> None:
+            scenario_title = st.session_state.get(
+                "simulation_scenario_name", scenario_name
+            )
             scenario = {
-                "name": scenario_name,
+                "name": scenario_title,
                 "gross_margin": gross_margin,
                 "fixed_cost": fixed_cost,
                 "target_profit": target_profit,
@@ -4006,16 +4059,26 @@ def render_cash_tab(
                 "preset": inputs_state.get("preset", "カスタム"),
                 "saved_at": datetime.now().isoformat(),
             }
-            scenarios = st.session_state.setdefault("saved_scenarios", [])
-            scenarios.append(scenario)
-            st.session_state["simulation_scenario_name"] = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+            st.session_state["saved_scenarios"].append(scenario)
+            new_default = f"{filters.store}_{datetime.now():%Y%m%d_%H%M}"
+            st.session_state["simulation_scenario_name"] = new_default
+            st.session_state["_simulation_scenario_name_widget"] = new_default
             message_config = MESSAGE_DICTIONARY.get("simulation_saved", {})
             toast_message = message_config.get(
                 "message", "シミュレーション結果を保存しました。"
             )
             st.toast(toast_message)
+            trigger_rerun()
 
-    saved_scenarios = st.session_state.setdefault("saved_scenarios", [])
+        st.button(
+            "シナリオ保存",
+            key="save_simulation_scenario",
+            on_click=_save_scenario,
+        )
+
+    if "saved_scenarios" not in st.session_state:
+        st.session_state["saved_scenarios"] = []
+    saved_scenarios = st.session_state["saved_scenarios"]
     with saved_col:
         if saved_scenarios:
             selected_index = st.selectbox(
@@ -4025,8 +4088,10 @@ def render_cash_tab(
                 key="simulation_selected_scenario",
             )
             selected = saved_scenarios[selected_index]
-            if st.button("選択したシナリオを適用", key="apply_simulation_scenario"):
-                scenario_inputs = st.session_state.setdefault("cash_flow_inputs", {})
+            def _apply_scenario() -> None:
+                if "cash_flow_inputs" not in st.session_state:
+                    st.session_state["cash_flow_inputs"] = {}
+                scenario_inputs = st.session_state["cash_flow_inputs"]
                 scenario_inputs.update(
                     {
                         "gross_margin": float(selected["gross_margin"]),
@@ -4036,6 +4101,12 @@ def render_cash_tab(
                     }
                 )
                 trigger_rerun()
+
+            st.button(
+                "選択したシナリオを適用",
+                key="apply_simulation_scenario",
+                on_click=_apply_scenario,
+            )
 
             scenarios_df = pd.DataFrame(saved_scenarios)
             st.dataframe(scenarios_df, use_container_width=True)
@@ -4051,8 +4122,10 @@ def render_cash_tab(
 def main() -> None:
     st.title("松屋 計数管理ダッシュボード")
     _inject_global_styles()
-    st.session_state.setdefault(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
-    st.session_state.setdefault("active_page", PAGE_OPTIONS[0])
+    if MAIN_TAB_KEY not in st.session_state:
+        st.session_state[MAIN_TAB_KEY] = MAIN_TAB_LABELS[0]
+    if "active_page" not in st.session_state:
+        st.session_state["active_page"] = PAGE_OPTIONS[0]
 
     sample_files = data_loader.available_sample_files()
     templates = data_loader.available_templates()
@@ -4123,9 +4196,14 @@ def main() -> None:
                     file_name=f"{dataset}_template.csv",
                     key=f"data-spec-template-{dataset}",
                 )
-            if st.button("閉じる", key="close_data_spec_modal"):
-                st.session_state["show_data_spec_modal"] = False
-                trigger_rerun()
+            def _close_data_spec_modal() -> None:
+                _set_state_and_rerun("show_data_spec_modal", False)
+
+            st.button(
+                "閉じる",
+                key="close_data_spec_modal",
+                on_click=_close_data_spec_modal,
+            )
 
     mode = sidebar_state["data_source_mode"]
     validation_results: Dict[str, data_loader.ValidationResult] = {}
@@ -4174,7 +4252,8 @@ def main() -> None:
     elif mode == "api" and integration_result is not None:
         st.session_state["current_source"] = "api"
     else:
-        st.session_state.setdefault("current_source", current_source)
+        if "current_source" not in st.session_state:
+            st.session_state["current_source"] = current_source
 
     _ensure_dataset_metadata(
         st.session_state["current_datasets"],

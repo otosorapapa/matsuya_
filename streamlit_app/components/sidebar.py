@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import streamlit as st
 
+from .. import rerun as trigger_rerun
 from .. import transformers
 
 
@@ -177,8 +178,18 @@ def render_sidebar(
             status_container.warning(f"{label}: 未アップロード")
     st.sidebar.caption("最新の取込状況を確認してから分析を進めてください。")
 
-    if st.sidebar.button("データ仕様", key="open_data_spec_button"):
+    if "show_data_spec_modal" not in st.session_state:
+        st.session_state["show_data_spec_modal"] = False
+
+    def _open_data_spec_modal() -> None:
         st.session_state["show_data_spec_modal"] = True
+        trigger_rerun()
+
+    st.sidebar.button(
+        "データ仕様",
+        key="open_data_spec_button",
+        on_click=_open_data_spec_modal,
+    )
     show_data_spec_modal = st.session_state.get("show_data_spec_modal", False)
 
     with st.sidebar.expander("サンプルデータ・テンプレートをダウンロード"):
@@ -204,17 +215,16 @@ def render_sidebar(
                 key=f"template-{key}",
             )
 
-    alert_state = st.session_state.setdefault(
-        "alert_settings",
-        {
+    if "alert_settings" not in st.session_state:
+        st.session_state["alert_settings"] = {
             "stockout_threshold": 0,
             "excess_threshold": 5,
             "deficit_threshold": -500000,
             "notification_channel": "banner",
             "notification_email": "",
             "slack_webhook": "",
-        },
-    )
+        }
+    alert_state = st.session_state["alert_settings"]
     st.sidebar.header("アラート設定")
     stockout_threshold = st.sidebar.number_input(
         "欠品アラート基準 (品目数)",

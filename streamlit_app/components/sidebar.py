@@ -112,9 +112,16 @@ def render_sidebar(
     }
 
     if data_source_mode == "csv":
-        uploaded_sales = st.sidebar.file_uploader("売上CSVをアップロード", type="csv")
-        uploaded_inventory = st.sidebar.file_uploader("仕入/在庫CSVをアップロード", type="csv")
-        uploaded_fixed_costs = st.sidebar.file_uploader("固定費CSVをアップロード", type="csv")
+        file_types = ["csv", "xlsx", "xls"]
+        uploaded_sales = st.sidebar.file_uploader(
+            "売上データをアップロード", type=file_types
+        )
+        uploaded_inventory = st.sidebar.file_uploader(
+            "仕入/在庫データをアップロード", type=file_types
+        )
+        uploaded_fixed_costs = st.sidebar.file_uploader(
+            "固定費データをアップロード", type=file_types
+        )
     else:
         if providers:
             default_end = default_period[1]

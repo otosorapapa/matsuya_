@@ -90,15 +90,39 @@ class ValidationResult:
 
 
 def _coerce_to_dataframe(source: Optional[CsvSource], *, default_path: Path) -> pd.DataFrame:
-    """Return a dataframe from a CSV source or fallback to a default path."""
+    """Return a dataframe from a CSV/Excel source or fallback to a default path."""
+
+    def _read_from_buffer(buffer: IO[bytes] | IO[str] | BytesIO) -> pd.DataFrame:
+        """Try reading Excel first and fallback to CSV."""
+
+        if hasattr(buffer, "seek"):
+            buffer.seek(0)
+        try:
+            return pd.read_excel(buffer)
+        except ValueError:
+            if hasattr(buffer, "seek"):
+                buffer.seek(0)
+            return pd.read_csv(buffer)
+
     if isinstance(source, pd.DataFrame):
         df = source.copy()
     elif source is None:
-        df = pd.read_csv(default_path)
+        with default_path.open("rb") as handle:
+            df = _read_from_buffer(handle)
     elif isinstance(source, (bytes, bytearray)):
-        df = pd.read_csv(BytesIO(source))
+        df = _read_from_buffer(BytesIO(source))
+    elif isinstance(source, (str, Path)):
+        path = Path(source)
+        if path.suffix.lower() in {".xlsx", ".xls"}:
+            df = pd.read_excel(path)
+        else:
+            df = pd.read_csv(path)
     else:
-        df = pd.read_csv(source)
+        name = getattr(source, "name", "")
+        if isinstance(name, str) and name.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(source)
+        else:
+            df = pd.read_csv(source)
     return df
 
 

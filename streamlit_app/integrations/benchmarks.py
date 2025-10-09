@@ -76,6 +76,9 @@ def fetch_benchmark_indicators(
     df = pd.DataFrame(data)
     if "metric" not in df.columns:
         return DEFAULT_BENCHMARKS.copy()
+    required_columns = {"industry_avg", "top_quartile", "unit"}
+    if not required_columns.issubset(df.columns):
+        return DEFAULT_BENCHMARKS.copy()
     return df
 
 

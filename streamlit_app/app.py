@@ -2,24 +2,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import sys
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
 import pandas as pd
 from pandas.tseries.offsets import MonthEnd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_plotly_events import plotly_events
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-from streamlit_app import data_loader, rerun as trigger_rerun, transformers
+from streamlit_app import data_loader, rerun as trigger_rerun, session_storage, transformers
 from streamlit_app.analytics import inventory, products, profitability, sales, simulation
 from streamlit_app.components import import_dashboard, report, sidebar
 from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
@@ -47,6 +49,36 @@ inject_custom_css()
 MAIN_TAB_KEY = "main_active_tab"
 MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]
 PAGE_OPTIONS = ["ダッシュボード", "データ管理", "ヘルプ／設定"]
+PERSISTED_SESSION_KEYS = [
+    "cash_flow_inputs",
+    "saved_scenarios",
+    "simulation_scenario_name",
+    "framework_toolkit",
+    "current_source",
+]
+
+DEFAULT_PESTEL_ROWS = [
+    {"ファクター": "政治 (Political)", "内容": "補助金や規制の動向", "影響度": 3},
+    {"ファクター": "経済 (Economic)", "内容": "原材料価格の変動", "影響度": 4},
+    {"ファクター": "社会 (Social)", "内容": "健康志向の高まり", "影響度": 3},
+    {"ファクター": "技術 (Technological)", "内容": "モバイル注文の普及", "影響度": 4},
+    {"ファクター": "環境 (Environmental)", "内容": "脱プラスチック規制", "影響度": 2},
+    {"ファクター": "法的 (Legal)", "内容": "食品表示の厳格化", "影響度": 3},
+]
+
+DEFAULT_SWOT_ROWS = [
+    {"カテゴリ": "Strength", "内容": "高い店舗網カバレッジ", "優先度": "高"},
+    {"カテゴリ": "Weakness", "内容": "ピーク時の人員不足", "優先度": "中"},
+    {"カテゴリ": "Opportunity", "内容": "デリバリー需要の伸び", "優先度": "高"},
+    {"カテゴリ": "Threat", "内容": "原材料高騰", "優先度": "高"},
+]
+
+DEFAULT_SCORECARD_ROWS = [
+    {"視点": "財務", "指標": "営業利益率", "現状": 8.0, "目標": 12.0, "重要度": 5},
+    {"視点": "顧客", "指標": "リピート率", "現状": 62.0, "目標": 70.0, "重要度": 4},
+    {"視点": "業務プロセス", "指標": "調理リードタイム", "現状": 6.5, "目標": 5.0, "重要度": 3},
+    {"視点": "学習と成長", "指標": "研修受講率", "現状": 55.0, "目標": 80.0, "重要度": 3},
+]
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -209,6 +241,94 @@ def _build_csv_validators() -> Dict[str, Callable[[Optional[object]], data_loade
 
 
 CSV_VALIDATORS = _build_csv_validators()
+
+
+def _bootstrap_persisted_session_state() -> None:
+    """Restore persisted state values into ``st.session_state``."""
+
+    stored = session_storage.load_state()
+    if not stored:
+        return
+    for key in PERSISTED_SESSION_KEYS:
+        if key in stored and key not in st.session_state:
+            st.session_state[key] = stored[key]
+
+
+def _persist_session_state() -> None:
+    """Persist selected session state keys to disk."""
+
+    payload = session_storage.extract_values(PERSISTED_SESSION_KEYS, st.session_state)
+    session_storage.save_state(payload)
+
+
+def _inject_keyboard_shortcuts() -> None:
+    """Register keyboard shortcuts for power users."""
+
+    main_tabs_json = json.dumps(MAIN_TAB_LABELS, ensure_ascii=False)
+    page_options_json = json.dumps(PAGE_OPTIONS, ensure_ascii=False)
+    script = (
+        """
+    <script>
+    const mainTabs = __MAIN__;
+    const pageOptions = __PAGES__;
+    let lastPayload = null;
+    const sendValue = (value) => {
+        if (lastPayload === value) {
+            return;
+        }
+        lastPayload = value;
+        Streamlit.setComponentValue(value);
+    };
+    document.addEventListener('keydown', (event) => {
+        if (event.altKey && !event.shiftKey) {
+            const idx = parseInt(event.key, 10) - 1;
+            if (!Number.isNaN(idx) && idx >= 0 && idx < mainTabs.length) {
+                event.preventDefault();
+                sendValue(`main:${mainTabs[idx]}`);
+            }
+        }
+        if (event.altKey && event.shiftKey) {
+            const idx = parseInt(event.key, 10) - 1;
+            if (!Number.isNaN(idx) && idx >= 0 && idx < pageOptions.length) {
+                event.preventDefault();
+                sendValue(`page:${pageOptions[idx]}`);
+            }
+        }
+    });
+    window.addEventListener('message', (event) => {
+        if (event.data && event.data.type === 'streamlit:renderComplete') {
+            lastPayload = null;
+        }
+    });
+    </script>
+    """
+        .replace("__MAIN__", main_tabs_json)
+        .replace("__PAGES__", page_options_json)
+    )
+    result = components.html(script, height=0, width=0)
+    if isinstance(result, str):
+        if result.startswith("main:"):
+            target = result.split(":", 1)[1]
+            if target in MAIN_TAB_LABELS:
+                st.session_state[MAIN_TAB_KEY] = target
+                trigger_rerun()
+        elif result.startswith("page:"):
+            target = result.split(":", 1)[1]
+            if target in PAGE_OPTIONS:
+                st.session_state["active_page"] = target
+                trigger_rerun()
+
+
+def _resolve_framework_state() -> Dict[str, Any]:
+    if "framework_toolkit" not in st.session_state:
+        st.session_state["framework_toolkit"] = {
+            "pestel": json.loads(json.dumps(DEFAULT_PESTEL_ROWS, ensure_ascii=False)),
+            "swot": json.loads(json.dumps(DEFAULT_SWOT_ROWS, ensure_ascii=False)),
+            "scorecard": json.loads(
+                json.dumps(DEFAULT_SCORECARD_ROWS, ensure_ascii=False)
+            ),
+        }
+    return st.session_state["framework_toolkit"]
 
 
 def _coerce_datetime_column(
@@ -3833,96 +3953,174 @@ def render_cash_tab(
         inputs_state["fixed_cost"] = fixed_default
     inputs_state["fixed_cost_default"] = fixed_default
 
-    if "target_profit" not in inputs_state:
-        inputs_state["target_profit"] = 5_000_000.0
-    if "preset" not in inputs_state:
-        inputs_state["preset"] = "500万円"
+    inputs_state.setdefault("target_profit", 5_000_000.0)
+    inputs_state.setdefault("preset", "500万円")
+    inputs_state.setdefault("sales_adjustment_pct", 0.0)
+    inputs_state.setdefault("fixed_cost_adjustment_pct", 0.0)
+    inputs_state.setdefault("discount_rate_pct", 5.0)
+    inputs_state.setdefault("growth_rate_pct", 0.0)
+    inputs_state.setdefault("projection_years", 3)
 
     preset_options = {"500万円": 5_000_000.0, "1,000万円": 10_000_000.0, "カスタム": None}
     preset_keys = list(preset_options.keys())
     preset_value = inputs_state.get("preset", preset_keys[0])
-    preset_index = preset_keys.index(preset_value) if preset_value in preset_keys else 0
+    if preset_value not in preset_keys:
+        preset_value = preset_keys[0]
+    preset_index = preset_keys.index(preset_value)
 
-    with st.form("cash_flow_form"):
-        col1, col2, col3 = st.columns(3)
-        margin_choice = col1.slider(
-            "粗利率",
-            min_value=0.1,
-            max_value=0.8,
-            value=float(inputs_state.get("gross_margin", margin_default)),
-            step=0.01,
-            format="%0.2f",
-        )
-        fixed_choice = col2.number_input(
-            "固定費（円）",
-            min_value=0.0,
-            value=float(inputs_state.get("fixed_cost", fixed_default)),
-            step=100000.0,
-            format="%0.0f",
-        )
-        preset_choice = col3.selectbox(
-            "目標利益テンプレート",
-            preset_keys,
-            index=preset_index,
-            key="cash_flow_preset_select",
-        )
-        preset_target_value = preset_options[preset_choice]
-        target_default = (
-            float(preset_target_value)
-            if preset_target_value is not None
-            else float(inputs_state.get("target_profit", 5_000_000.0))
-        )
-        target_choice = col3.number_input(
-            "目標利益（円）",
-            min_value=0.0,
-            value=target_default,
-            step=50000.0,
-            format="%0.0f",
-            disabled=preset_target_value is not None,
-        )
-        submitted = st.form_submit_button("試算する", type="primary")
+    control_cols = st.columns(4)
+    margin_choice = control_cols[0].slider(
+        "粗利率",
+        min_value=0.1,
+        max_value=0.8,
+        value=float(inputs_state.get("gross_margin", margin_default)),
+        step=0.01,
+        format="%0.2f",
+    )
+    sales_adjustment = control_cols[1].slider(
+        "売上調整率（%）",
+        min_value=-30.0,
+        max_value=50.0,
+        value=float(inputs_state.get("sales_adjustment_pct", 0.0)),
+        step=1.0,
+        format="%0.0f",
+    )
+    fixed_adjustment = control_cols[2].slider(
+        "固定費調整率（%）",
+        min_value=-30.0,
+        max_value=30.0,
+        value=float(inputs_state.get("fixed_cost_adjustment_pct", 0.0)),
+        step=1.0,
+        format="%0.0f",
+    )
+    discount_rate = control_cols[3].slider(
+        "割引率（%）",
+        min_value=0.0,
+        max_value=15.0,
+        value=float(inputs_state.get("discount_rate_pct", 5.0)),
+        step=0.1,
+        format="%0.1f",
+    )
 
-    if submitted:
-        target_value = (
-            float(preset_target_value)
-            if preset_target_value is not None
-            else float(target_choice)
-        )
-        inputs_state.update(
-            {
-                "gross_margin": float(margin_choice),
-                "fixed_cost": float(fixed_choice),
-                "target_profit": target_value,
-                "preset": preset_choice,
-            }
-        )
+    secondary_cols = st.columns(3)
+    fixed_choice = secondary_cols[0].number_input(
+        "固定費ベース（円）",
+        min_value=0.0,
+        value=float(inputs_state.get("fixed_cost", fixed_default)),
+        step=100000.0,
+        format="%0.0f",
+    )
+    growth_rate = secondary_cols[1].slider(
+        "売上成長率（年率%）",
+        min_value=-20.0,
+        max_value=30.0,
+        value=float(inputs_state.get("growth_rate_pct", 0.0)),
+        step=0.5,
+        format="%0.1f",
+    )
+    projection_years = secondary_cols[2].slider(
+        "試算期間（年）",
+        min_value=1,
+        max_value=5,
+        value=int(inputs_state.get("projection_years", 3)),
+        step=1,
+    )
 
-    if inputs_state.get("preset") != "カスタム":
-        preset_target = preset_options.get(inputs_state.get("preset"))
-        if preset_target is not None:
-            inputs_state["target_profit"] = float(preset_target)
+    target_cols = st.columns(2)
+    preset_choice = target_cols[0].selectbox(
+        "目標利益テンプレート",
+        preset_keys,
+        index=preset_index,
+        key="cash_flow_preset_select",
+    )
+    preset_target_value = preset_options[preset_choice]
+    target_slider = target_cols[1].slider(
+        "目標利益（円）",
+        min_value=0.0,
+        max_value=100_000_000.0,
+        value=float(inputs_state.get("target_profit", 5_000_000.0)),
+        step=500_000.0,
+        format="%0.0f",
+        disabled=preset_target_value is not None,
+    )
+
+    inputs_state["gross_margin"] = float(margin_choice)
+    inputs_state["sales_adjustment_pct"] = float(sales_adjustment)
+    inputs_state["fixed_cost_adjustment_pct"] = float(fixed_adjustment)
+    inputs_state["discount_rate_pct"] = float(discount_rate)
+    inputs_state["fixed_cost"] = float(fixed_choice)
+    inputs_state["growth_rate_pct"] = float(growth_rate)
+    inputs_state["projection_years"] = int(projection_years)
+    inputs_state["preset"] = preset_choice
+    if preset_target_value is not None:
+        inputs_state["target_profit"] = float(preset_target_value)
+    else:
+        inputs_state["target_profit"] = float(target_slider)
 
     gross_margin = float(inputs_state.get("gross_margin", margin_default))
+    sales_adjustment_pct = float(inputs_state.get("sales_adjustment_pct", 0.0))
     fixed_cost = float(inputs_state.get("fixed_cost", fixed_default))
+    fixed_cost_adjustment_pct = float(
+        inputs_state.get("fixed_cost_adjustment_pct", 0.0)
+    )
+    discount_rate_pct = float(inputs_state.get("discount_rate_pct", 5.0))
+    growth_rate_pct = float(inputs_state.get("growth_rate_pct", 0.0))
+    projection_years = int(inputs_state.get("projection_years", 3))
     target_profit = float(inputs_state.get("target_profit", 5_000_000.0))
+
+    current_sales_value = total_sales
+    adjusted_sales_value = current_sales_value * (1 + sales_adjustment_pct / 100.0)
+    adjusted_fixed_cost = fixed_cost * (1 + fixed_cost_adjustment_pct / 100.0)
 
     inputs = simulation.SimulationInputs(
         gross_margin=gross_margin,
-        fixed_cost=fixed_cost,
+        fixed_cost=adjusted_fixed_cost,
         target_profit=target_profit,
     )
     requirements = simulation.required_sales(inputs)
     breakeven_sales_value = float(requirements["breakeven"])
     target_sales_value = float(requirements["target_sales"])
-    current_sales_value = total_sales
+    scenario_sales_value = adjusted_sales_value
     progress_ratio = (
-        current_sales_value / target_sales_value if target_sales_value > 0 else 0.0
+        scenario_sales_value / target_sales_value if target_sales_value > 0 else 0.0
     )
-    reached_target = target_sales_value > 0 and current_sales_value >= target_sales_value
-    gauge_base = max(target_sales_value, current_sales_value)
+    reached_target = (
+        target_sales_value > 0 and scenario_sales_value >= target_sales_value
+    )
+    gauge_base = max(target_sales_value, scenario_sales_value)
     gauge_max = gauge_base * 1.1 if gauge_base else 1.0
 
-    curve = simulation.breakeven_sales_curve(simulation.DEFAULT_MARGIN_RANGE, fixed_cost)
+    growth_rate_value = growth_rate_pct / 100.0
+    discount_rate_value = discount_rate_pct / 100.0
+    scenario_cash_flow = simulation.annual_cash_flow(
+        sales=scenario_sales_value,
+        gross_margin=gross_margin,
+        fixed_cost=adjusted_fixed_cost,
+    )
+    cash_flows = simulation.project_cash_flows(
+        scenario_cash_flow, growth_rate_value, projection_years
+    )
+    npv_value = simulation.net_present_value(cash_flows, discount_rate_value)
+    projection_rows = []
+    cumulative_value = 0.0
+    for period, flow in enumerate(cash_flows, start=1):
+        discount_factor = (1 + discount_rate_value) ** period
+        present_value = flow / discount_factor if discount_factor else 0.0
+        cumulative_value += present_value
+        projection_rows.append(
+            {
+                "年": f"Year {period}",
+                "キャッシュフロー": flow,
+                "割引係数": discount_factor,
+                "現在価値": present_value,
+                "累計現在価値": cumulative_value,
+            }
+        )
+    projection_table = pd.DataFrame(projection_rows)
+
+    curve = simulation.breakeven_sales_curve(
+        simulation.DEFAULT_MARGIN_RANGE, adjusted_fixed_cost
+    )
     curve_chart = px.line(
         curve,
         x="gross_margin",
@@ -3961,6 +4159,10 @@ def render_cash_tab(
                     <div style="font-size:1.2rem;font-weight:500;">{target_sales_value:,.0f} 円</div>
                 </div>
                 <div>
+                    <div style="font-size:0.85rem;color:#6c757d;">シナリオ売上</div>
+                    <div style="font-size:1.2rem;font-weight:500;">{scenario_sales_value:,.0f} 円</div>
+                </div>
+                <div>
                     <div style="font-size:0.85rem;color:#6c757d;">現状売上</div>
                     <div style="font-size:1.2rem;font-weight:500;">{current_sales_value:,.0f} 円</div>
                 </div>
@@ -3970,6 +4172,7 @@ def render_cash_tab(
                 </div>
             </div>
         </div>
+        <div style="font-size:0.9rem;color:#495057;">売上調整率 {sales_adjustment_pct:+.0f}% ｜ 固定費調整率 {fixed_cost_adjustment_pct:+.0f}%</div>
         """
         st.markdown(summary_card_html, unsafe_allow_html=True)
 
@@ -4005,13 +4208,13 @@ def render_cash_tab(
         gauge_fig = go.Figure(
             go.Indicator(
                 mode="gauge+number",
-                value=current_sales_value,
+                value=scenario_sales_value,
                 number={
                     "valueformat": ",.0f",
                     "suffix": " 円",
                     "font": {"size": 28},
                 },
-                title={"text": "目標売上に対する現状売上（円）", "font": {"size": 16}},
+                title={"text": "目標売上に対するシナリオ売上（円）", "font": {"size": 16}},
                 gauge=gauge_config,
             )
         )
@@ -4021,12 +4224,36 @@ def render_cash_tab(
         if target_sales_value > 0:
             status_text = "達成" if reached_target else "未達"
             st.caption(
-                f"バーは現状売上、ラインは目標売上を示します（単位: 円）。背景色は目標{status_text}の状態を表します。"
+                f"ゲージは調整後のシナリオ売上、ラインは目標売上を示します（単位: 円）。背景色は目標{status_text}の状態を表します。現状売上: {current_sales_value:,.0f} 円。"
             )
         else:
             st.caption(
-                "バーは現状売上を示します（単位: 円）。目標売上が未設定の場合はラインは表示されません。"
+                f"シナリオ売上: {scenario_sales_value:,.0f} 円。目標売上が未設定の場合はラインは表示されません。"
             )
+
+        st.markdown("#### キャッシュフロー試算")
+        metrics_cols = st.columns(3)
+        metrics_cols[0].metric("NPV", f"{npv_value:,.0f} 円")
+        metrics_cols[1].metric("年間キャッシュフロー", f"{scenario_cash_flow:,.0f} 円")
+        scenario_delta = scenario_sales_value - current_sales_value
+        metrics_cols[2].metric(
+            "シナリオ売上",
+            f"{scenario_sales_value:,.0f} 円",
+            delta=f"{scenario_delta:+,.0f} 円",
+        )
+        st.caption(
+            f"割引率 {discount_rate_pct:.1f}% ｜ 成長率 {growth_rate_pct:.1f}% ｜ 試算期間 {projection_years}年"
+        )
+        if not projection_table.empty:
+            display_projection = projection_table.copy()
+            display_projection["割引係数"] = display_projection["割引係数"].map(
+                lambda v: f"{v:.3f}"
+            )
+            for column in ["キャッシュフロー", "現在価値", "累計現在価値"]:
+                display_projection[column] = display_projection[column].map(
+                    lambda v: f"{v:,.0f}"
+                )
+            st.dataframe(display_projection, use_container_width=True)
 
         st.markdown("#### シナリオ詳細")
 
@@ -4053,9 +4280,19 @@ def render_cash_tab(
                 "name": scenario_title,
                 "gross_margin": gross_margin,
                 "fixed_cost": fixed_cost,
+                "adjusted_fixed_cost": adjusted_fixed_cost,
                 "target_profit": target_profit,
                 "breakeven": requirements["breakeven"],
                 "target_sales": requirements["target_sales"],
+                "sales_adjustment_pct": sales_adjustment_pct,
+                "fixed_cost_adjustment_pct": fixed_cost_adjustment_pct,
+                "discount_rate_pct": discount_rate_pct,
+                "growth_rate_pct": growth_rate_pct,
+                "projection_years": projection_years,
+                "npv": npv_value,
+                "scenario_sales": scenario_sales_value,
+                "current_sales": current_sales_value,
+                "annual_cash_flow": scenario_cash_flow,
                 "preset": inputs_state.get("preset", "カスタム"),
                 "saved_at": datetime.now().isoformat(),
             }
@@ -4088,16 +4325,28 @@ def render_cash_tab(
                 key="simulation_selected_scenario",
             )
             selected = saved_scenarios[selected_index]
+
             def _apply_scenario() -> None:
-                if "cash_flow_inputs" not in st.session_state:
-                    st.session_state["cash_flow_inputs"] = {}
-                scenario_inputs = st.session_state["cash_flow_inputs"]
+                scenario_inputs = st.session_state.setdefault("cash_flow_inputs", {})
                 scenario_inputs.update(
                     {
-                        "gross_margin": float(selected["gross_margin"]),
-                        "fixed_cost": float(selected["fixed_cost"]),
-                        "target_profit": float(selected["target_profit"]),
+                        "gross_margin": float(selected.get("gross_margin", 0.0)),
+                        "fixed_cost": float(selected.get("fixed_cost", 0.0)),
+                        "target_profit": float(selected.get("target_profit", 0.0)),
                         "preset": "カスタム",
+                        "sales_adjustment_pct": float(
+                            selected.get("sales_adjustment_pct", 0.0)
+                        ),
+                        "fixed_cost_adjustment_pct": float(
+                            selected.get("fixed_cost_adjustment_pct", 0.0)
+                        ),
+                        "discount_rate_pct": float(
+                            selected.get("discount_rate_pct", 5.0)
+                        ),
+                        "growth_rate_pct": float(
+                            selected.get("growth_rate_pct", 0.0)
+                        ),
+                        "projection_years": int(selected.get("projection_years", 3)),
                     }
                 )
                 trigger_rerun()
@@ -4116,12 +4365,274 @@ def render_cash_tab(
                 data=csv_bytes,
                 file_name="matsuya_simulation_scenarios.csv",
             )
+
+            st.markdown("#### シナリオ比較")
+            compare_options = list(range(len(saved_scenarios)))
+            selected_compare = st.multiselect(
+                "比較するシナリオを選択",
+                options=compare_options,
+                format_func=lambda idx: saved_scenarios[idx]["name"],
+                key="scenario_compare_selection",
+            )
+            if len(selected_compare) >= 2:
+                compare_records = [saved_scenarios[idx] for idx in selected_compare]
+                compare_df = pd.DataFrame(compare_records)
+                st.dataframe(compare_df.set_index("name"), use_container_width=True)
+
+                radar_columns = [
+                    "gross_margin",
+                    "sales_adjustment_pct",
+                    "fixed_cost_adjustment_pct",
+                    "discount_rate_pct",
+                    "growth_rate_pct",
+                    "npv",
+                ]
+                radar_df = compare_df.reindex(
+                    columns=["name", *radar_columns]
+                ).copy()
+                for column in radar_columns:
+                    radar_df[column] = pd.to_numeric(
+                        radar_df[column], errors="coerce"
+                    ).fillna(0.0)
+                if not radar_df.empty:
+                    theta = [
+                        "粗利率",
+                        "売上調整率",
+                        "固定費調整率",
+                        "割引率",
+                        "成長率",
+                        "NPVスコア",
+                    ]
+
+                    def _scale_series(series: pd.Series, min_value: float, max_value: float) -> pd.Series:
+                        if max_value == min_value:
+                            return pd.Series(50.0, index=series.index)
+                        return (series - min_value) / (max_value - min_value) * 100
+
+                    scaled_sales = _scale_series(radar_df["sales_adjustment_pct"], -30.0, 50.0)
+                    scaled_fixed = _scale_series(radar_df["fixed_cost_adjustment_pct"], -30.0, 30.0)
+                    scaled_discount = _scale_series(radar_df["discount_rate_pct"], 0.0, 15.0)
+                    scaled_growth = _scale_series(radar_df["growth_rate_pct"], -20.0, 30.0)
+                    min_npv = float(radar_df["npv"].min())
+                    max_npv = float(radar_df["npv"].max())
+                    if max_npv == min_npv:
+                        scaled_npv = pd.Series(100.0, index=radar_df.index)
+                    else:
+                        scaled_npv = (radar_df["npv"] - min_npv) / (max_npv - min_npv) * 100
+
+                    radar_fig = go.Figure()
+                    for idx, row in radar_df.iterrows():
+                        values = [
+                            float(row["gross_margin"]) * 100,
+                            float(scaled_sales.loc[idx]),
+                            float(scaled_fixed.loc[idx]),
+                            float(scaled_discount.loc[idx]),
+                            float(scaled_growth.loc[idx]),
+                            float(scaled_npv.loc[idx]),
+                        ]
+                        radar_fig.add_trace(
+                            go.Scatterpolar(
+                                r=values,
+                                theta=theta,
+                                fill="toself",
+                                name=row["name"],
+                            )
+                        )
+                    radar_fig.update_layout(
+                        polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+                        showlegend=True,
+                    )
+                    st.plotly_chart(radar_fig, use_container_width=True)
+                    st.caption("各指標は0〜100に正規化した比較スコアです。")
         else:
             st.info("保存されたシナリオはまだありません。")
 
+    render_strategy_frameworks()
+
+
+def render_strategy_frameworks() -> None:
+    st.markdown("### 戦略フレームワークツール")
+    framework_state = _resolve_framework_state()
+    tabs = st.tabs(["PESTEL分析", "SWOT分析", "バランススコアカード"])
+
+    with tabs[0]:
+        st.caption("マクロ環境の変化要因と影響度を整理します。")
+        pestel_df = pd.DataFrame(framework_state.get("pestel", DEFAULT_PESTEL_ROWS))
+        pestel_editor = st.data_editor(
+            pestel_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="pestel_editor",
+            column_config={
+                "影響度": st.column_config.NumberColumn(
+                    "影響度 (1-5)", min_value=1, max_value=5, step=1
+                )
+            },
+        )
+        pestel_df = (
+            pestel_editor if isinstance(pestel_editor, pd.DataFrame) else pd.DataFrame(pestel_editor)
+        )
+        pestel_df["影響度"] = pd.to_numeric(
+            pestel_df.get("影響度", 0), errors="coerce"
+        ).clip(lower=0).fillna(0)
+        framework_state["pestel"] = pestel_df.to_dict("records")
+        impact_max = float(pestel_df["影響度"].max()) if not pestel_df.empty else 0.0
+        if pd.isna(impact_max):
+            impact_max = 0.0
+        impact_chart = px.bar(
+            pestel_df,
+            x="ファクター",
+            y="影響度",
+            color="影響度",
+            color_continuous_scale="Blues",
+            range_y=[0, max(5.0, impact_max)],
+        )
+        impact_chart.update_layout(
+            xaxis_title="ファクター",
+            yaxis_title="影響度 (高いほど影響大)",
+            coloraxis_showscale=False,
+        )
+        st.plotly_chart(impact_chart, use_container_width=True)
+
+    with tabs[1]:
+        st.caption("内部要因と外部要因を4象限で整理します。")
+        swot_df = pd.DataFrame(framework_state.get("swot", DEFAULT_SWOT_ROWS))
+        swot_editor = st.data_editor(
+            swot_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="swot_editor",
+            column_config={
+                "優先度": st.column_config.SelectboxColumn(
+                    "優先度",
+                    options=["高", "中", "低"],
+                )
+            },
+        )
+        swot_df = (
+            swot_editor if isinstance(swot_editor, pd.DataFrame) else pd.DataFrame(swot_editor)
+        )
+        framework_state["swot"] = swot_df.to_dict("records")
+
+        swot_groups: Dict[str, List[str]] = {
+            "Strength": [],
+            "Weakness": [],
+            "Opportunity": [],
+            "Threat": [],
+        }
+        for item in framework_state["swot"]:
+            category = item.get("カテゴリ")
+            if category in swot_groups:
+                content = str(item.get("内容") or "").strip()
+                if content:
+                    swot_groups[category].append(content)
+
+        matrix_text = [
+            [
+                "\n".join(swot_groups["Strength"]) or "－",
+                "\n".join(swot_groups["Weakness"]) or "－",
+            ],
+            [
+                "\n".join(swot_groups["Opportunity"]) or "－",
+                "\n".join(swot_groups["Threat"]) or "－",
+            ],
+        ]
+        heatmap = go.Figure(
+            data=go.Heatmap(
+                z=[[1, 0.8], [0.8, 1]],
+                x=["プラス要因", "マイナス要因"],
+                y=["内部環境", "外部環境"],
+                text=matrix_text,
+                texttemplate="%{text}",
+                colorscale=[[0, "#f8f9fa"], [1, "#dee2e6"]],
+                showscale=False,
+            )
+        )
+        heatmap.update_layout(
+            xaxis=dict(title=""),
+            yaxis=dict(title=""),
+            margin=dict(l=40, r=40, t=40, b=40),
+        )
+        st.plotly_chart(heatmap, use_container_width=True)
+
+    with tabs[2]:
+        st.caption("重点KPIの達成状況と重要度を可視化します。")
+        scorecard_df = pd.DataFrame(
+            framework_state.get("scorecard", DEFAULT_SCORECARD_ROWS)
+        )
+        scorecard_editor = st.data_editor(
+            scorecard_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            key="scorecard_editor",
+            column_config={
+                "現状": st.column_config.NumberColumn("現状", step=0.5),
+                "目標": st.column_config.NumberColumn("目標", step=0.5),
+                "重要度": st.column_config.NumberColumn(
+                    "重要度 (1-5)", min_value=1, max_value=5, step=1
+                ),
+            },
+        )
+        scorecard_df = (
+            scorecard_editor
+            if isinstance(scorecard_editor, pd.DataFrame)
+            else pd.DataFrame(scorecard_editor)
+        )
+        scorecard_df["現状"] = pd.to_numeric(
+            scorecard_df.get("現状", 0), errors="coerce"
+        ).fillna(0.0)
+        scorecard_df["目標"] = pd.to_numeric(
+            scorecard_df.get("目標", 0), errors="coerce"
+        ).replace(0, pd.NA)
+        scorecard_df["重要度"] = pd.to_numeric(
+            scorecard_df.get("重要度", 0), errors="coerce"
+        ).fillna(0.0)
+        framework_state["scorecard"] = scorecard_df.fillna(0).to_dict("records")
+        grouped = (
+            scorecard_df.groupby("視点")
+            .agg({"現状": "mean", "目標": "mean", "重要度": "mean"})
+            .reset_index()
+        )
+        grouped["達成率"] = grouped.apply(
+            lambda row: float(row["現状"]) / float(row["目標"]) * 100
+            if pd.notna(row["目標"]) and row["目標"] != 0
+            else 0.0,
+            axis=1,
+        )
+        max_importance = max(grouped["重要度"].max(), 1.0)
+        grouped["重要度スコア"] = grouped["重要度"] / max_importance * 100
+        radar = go.Figure()
+        radar.add_trace(
+            go.Scatterpolar(
+                r=grouped["達成率"].tolist(),
+                theta=grouped["視点"].tolist(),
+                fill="toself",
+                name="達成率 (%)",
+            )
+        )
+        radar.add_trace(
+            go.Scatterpolar(
+                r=grouped["重要度スコア"].tolist(),
+                theta=grouped["視点"].tolist(),
+                fill="toself",
+                name="重要度 (相対)",
+            )
+        )
+        radar.update_layout(
+            polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
+            showlegend=True,
+        )
+        st.plotly_chart(radar, use_container_width=True)
+        with st.expander("指標一覧", expanded=False):
+            st.dataframe(scorecard_df, use_container_width=True)
+
+
 def main() -> None:
+    _bootstrap_persisted_session_state()
     st.title("松屋 計数管理ダッシュボード")
     _inject_global_styles()
+    _inject_keyboard_shortcuts()
+    st.caption("⌨️ ショートカット: Alt+1〜4でメインタブ切替、Alt+Shift+1〜3でページ切替できます。")
     if MAIN_TAB_KEY not in st.session_state:
         st.session_state[MAIN_TAB_KEY] = MAIN_TAB_LABELS[0]
     if "active_page" not in st.session_state:
@@ -4384,6 +4895,8 @@ def main() -> None:
         )
     else:
         render_help_settings_page()
+
+    _persist_session_state()
 
 if __name__ == "__main__":
     main()

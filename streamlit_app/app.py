@@ -1418,26 +1418,33 @@ def render_alert_center(
                 if contact_text:
                     st.caption(contact_text)
                 for alert in alerts:
+                    severity = escape(str(alert.get("severity", "medium")))
+                    title = escape(str(alert.get("title", "")))
+                    message = escape(str(alert.get("message", "")))
+                    count = escape(str(alert.get("count", 0)))
                     cause = escape(str(alert.get("cause", ""))) if alert.get("cause") else ""
                     recommendation = (
                         escape(str(alert.get("recommendation", "")))
                         if alert.get("recommendation")
                         else ""
                     )
-                    st.markdown(
-                        f"<div class='alert-card {alert.get('severity', 'medium')}'>"
-                        f"<div class='alert-card__title'>{alert.get('title')}</div>"
-                        f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
-                        f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
-                        + (f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>" if cause else "")
-                        + (
-                            f"<div class='alert-card__actions'><strong>推奨アクション:</strong> {recommendation}</div>"
-                            if recommendation
-                            else ""
-                        )
-                        "</div>",
-                        unsafe_allow_html=True,
+                    card_html = (
+                        f"<div class='alert-card {severity}'>"
+                        f"<div class='alert-card__title'>{title}</div>"
+                        f"<div class='alert-card__count'>{count}件</div>"
+                        f"<div class='alert-card__message'>{message}</div>"
                     )
+                    if cause:
+                        card_html += (
+                            f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>"
+                        )
+                    if recommendation:
+                        card_html += (
+                            "<div class='alert-card__actions'><strong>推奨アクション:</strong> "
+                            f"{recommendation}</div>"
+                        )
+                    card_html += "</div>"
+                    st.markdown(card_html, unsafe_allow_html=True)
                     action = alert.get("action") or {}
                     callback = action.get("callback")
                     if callback:
@@ -1477,26 +1484,33 @@ def render_alert_center(
 
         columns = st.columns(len(alerts))
         for column, alert in zip(columns, alerts):
+            severity = escape(str(alert.get("severity", "medium")))
+            title = escape(str(alert.get("title", "")))
+            message = escape(str(alert.get("message", "")))
+            count = escape(str(alert.get("count", 0)))
             cause = escape(str(alert.get("cause", ""))) if alert.get("cause") else ""
             recommendation = (
                 escape(str(alert.get("recommendation", "")))
                 if alert.get("recommendation")
                 else ""
             )
-            column.markdown(
-                f"<div class='alert-card {alert.get('severity', 'medium')}'>"
-                f"<div class='alert-card__title'>{alert.get('title')}</div>"
-                f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
-                f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
-                + (f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>" if cause else "")
-                + (
-                    f"<div class='alert-card__actions'><strong>推奨アクション:</strong> {recommendation}</div>"
-                    if recommendation
-                    else ""
-                )
-                "</div>",
-                unsafe_allow_html=True,
+            card_html = (
+                f"<div class='alert-card {severity}'>"
+                f"<div class='alert-card__title'>{title}</div>"
+                f"<div class='alert-card__count'>{count}件</div>"
+                f"<div class='alert-card__message'>{message}</div>"
             )
+            if cause:
+                card_html += (
+                    f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>"
+                )
+            if recommendation:
+                card_html += (
+                    "<div class='alert-card__actions'><strong>推奨アクション:</strong> "
+                    f"{recommendation}</div>"
+                )
+            card_html += "</div>"
+            column.markdown(card_html, unsafe_allow_html=True)
             action = alert.get("action") or {}
             callback = action.get("callback")
             if callback:

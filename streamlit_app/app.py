@@ -5,6 +5,7 @@ import hashlib
 import logging
 import sys
 from datetime import date, datetime, timedelta
+from html import escape
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
 
@@ -462,6 +463,7 @@ def _log_integration_result(result: IntegrationResult) -> None:
 GLOBAL_FILTER_KEY = "global_filters"
 GLOBAL_FILTER_PRESETS = ["今月", "先月", "直近30日", "カスタム"]
 TARGET_MARGIN_RATE = 0.12
+TARGET_SALES_GROWTH = 0.05
 TARGET_CASH_RATIO = 0.25
 BASE_CASH_BUFFER = 3_000_000.0
 KPI_ALERT_THRESHOLD = -0.05
@@ -1083,6 +1085,60 @@ def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
             card_container.markdown(card_html, unsafe_allow_html=True)
 
 
+def _render_kpi_highlights(
+    highlights: Sequence[Dict[str, object]], colors: Dict[str, str]
+) -> None:
+    """Render visually emphasised KPI highlight cards."""
+
+    if not highlights:
+        return
+
+    accent_light = _adjust_hex_color(colors["accent"], 0.65)
+    border_color = _adjust_hex_color(colors["accent"], -0.45)
+    card_html_list: List[str] = []
+    for highlight in highlights:
+        label = escape(str(highlight.get("label", "")))
+        value_text = str(highlight.get("value", "-"))
+        tooltip = highlight.get("tooltip")
+        tooltip_attr = f' title="{escape(str(tooltip))}"' if tooltip else ""
+        delta_ratio = highlight.get("delta")
+        delta_text = highlight.get("delta_text")
+        if delta_ratio is not None:
+            arrow = "▲" if float(delta_ratio) >= 0 else "▼"
+            formatted = f"{arrow} {abs(float(delta_ratio)) * 100:.1f}pt"
+            delta_text = delta_text or formatted
+            delta_color = colors["success"] if float(delta_ratio) >= 0 else colors["error"]
+        else:
+            delta_text = delta_text or "比較データなし"
+            delta_color = colors.get("warning", colors["text"])
+        target_label = highlight.get("target_label")
+        target_html = (
+            f"<div style=\"font-size:0.75rem;color:{colors['text']};opacity:0.65;margin-top:0.45rem;\">{escape(str(target_label))}</div>"
+            if target_label
+            else ""
+        )
+        card_html_list.append(
+            f"""
+            <div style="flex:1;min-width:220px;background-color:{accent_light};border-radius:0.9rem;padding:1.1rem;border:1px solid {border_color};box-shadow:0 8px 24px rgba(15, 23, 42, 0.08);"{tooltip_attr}>
+                <div style="font-size:0.85rem;color:{colors['text']};opacity:0.75;font-weight:500;">{label}</div>
+                <div style="font-size:2.1rem;font-weight:600;color:{colors['text']};margin:0.35rem 0 0.45rem;">{escape(value_text)}</div>
+                <div style="font-size:0.9rem;font-weight:600;color:{delta_color};">{escape(delta_text)}</div>
+                {target_html}
+            </div>
+            """
+        )
+
+    st.markdown(
+        f"""
+        <div style="border-radius:1.1rem;padding:1.35rem;background:linear-gradient(135deg, {accent_light} 0%, rgba(255,255,255,0.95) 65%);border:1px solid {border_color};margin-bottom:1.5rem;">
+            <div style="font-size:1rem;font-weight:600;color:{colors['primary']};margin-bottom:0.9rem;">主要KPIハイライト</div>
+            <div style="display:flex;flex-wrap:wrap;gap:1rem;">{''.join(card_html_list)}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _cash_flow_summary(sales_df: pd.DataFrame, inventory_df: pd.DataFrame) -> Dict[str, float]:
     if sales_df.empty:
         return {
@@ -1428,6 +1484,7 @@ def render_dashboard_tab(
     inventory_df: pd.DataFrame,
 ) -> pd.DataFrame:
     st.markdown("### 経営ダッシュボード")
+    colors = _resolve_theme_colors()
 
     filtered_costs = fixed_costs_df.copy()
     filtered_inventory = inventory_df.copy()
@@ -1462,11 +1519,45 @@ def render_dashboard_tab(
         if not comparison_pnl.empty
         else None
     )
+    total_gross_profit = float(
+        pnl_df.get("gross_profit", pd.Series(dtype=float)).sum()
+    )
+    previous_gross_profit = (
+        float(
+            comparison_pnl.get("gross_profit", pd.Series(dtype=float)).sum()
+        )
+        if not comparison_pnl.empty
+        else None
+    )
+    gross_margin_ratio = (
+        total_gross_profit / total_sales if total_sales else None
+    )
+    previous_gross_margin_ratio = (
+        previous_gross_profit / previous_sales
+        if (previous_gross_profit is not None and previous_sales not in (None, 0))
+        else None
+    )
+    operating_margin_ratio = (
+        operating_profit / total_sales if total_sales else None
+    )
+    previous_operating_margin_ratio = (
+        previous_operating_profit / previous_sales
+        if (previous_operating_profit is not None and previous_sales not in (None, 0))
+        else None
+    )
     profit_target = sales_target * TARGET_MARGIN_RATE
 
     cash_current = _cash_flow_summary(sales_df, filtered_inventory)
     cash_previous = _cash_flow_summary(comparison_sales, filtered_inventory)
     cash_target = sales_target * TARGET_CASH_RATIO
+    cash_ratio = (
+        cash_current["balance"] / total_sales if total_sales else None
+    )
+    previous_cash_ratio = (
+        cash_previous.get("balance", 0.0) / previous_sales
+        if (previous_sales not in (None, 0))
+        else None
+    )
 
     overview_df = inventory.inventory_overview(
         sales_df,
@@ -1518,6 +1609,69 @@ def render_dashboard_tab(
             },
         ]
     )
+    sales_growth_ratio = _compute_growth(total_sales, previous_sales)
+    previous_sales_text = (
+        _format_currency(previous_sales) if previous_sales is not None else "データ不足"
+    )
+    operating_margin_display = (
+        _format_ratio(operating_margin_ratio)
+        if operating_margin_ratio is not None
+        else "データ不足"
+    )
+    previous_operating_margin_text = (
+        _format_ratio(previous_operating_margin_ratio)
+        if previous_operating_margin_ratio is not None
+        else "データ不足"
+    )
+    cash_ratio_display = (
+        _format_ratio(cash_ratio) if cash_ratio is not None else "データ不足"
+    )
+    previous_cash_ratio_text = (
+        _format_ratio(previous_cash_ratio)
+        if previous_cash_ratio is not None
+        else "データ不足"
+    )
+    highlight_metrics = [
+        {
+            "label": "売上高成長率",
+            "value": _format_ratio(sales_growth_ratio)
+            if sales_growth_ratio is not None
+            else "データ不足",
+            "delta": (
+                sales_growth_ratio - TARGET_SALES_GROWTH
+                if sales_growth_ratio is not None
+                else None
+            ),
+            "target_label": f"目標 {TARGET_SALES_GROWTH:.0%} ／ 前年売上: {previous_sales_text}",
+            "tooltip": "前年同期間との比較です。社内基準は前年比+5%です。",
+        },
+        {
+            "label": "営業利益率",
+            "value": operating_margin_display,
+            "delta": (
+                operating_margin_ratio - TARGET_MARGIN_RATE
+                if operating_margin_ratio is not None
+                else None
+            ),
+            "target_label": f"目標 {TARGET_MARGIN_RATE:.0%} ／ 営業利益: {_format_currency(operating_profit)}",
+            "tooltip": (
+                "営業利益 ÷ 売上高。前年利益率: "
+                + previous_operating_margin_text
+            ),
+        },
+        {
+            "label": "キャッシュ比率",
+            "value": cash_ratio_display,
+            "delta": (
+                cash_ratio - TARGET_CASH_RATIO if cash_ratio is not None else None
+            ),
+            "target_label": f"目標 {TARGET_CASH_RATIO:.0%} ／ 資金残高: {_format_currency(cash_current['balance'])}",
+            "tooltip": (
+                "資金残高 ÷ 期間売上。前年比: " + previous_cash_ratio_text
+            ),
+        },
+    ]
+    _render_kpi_highlights(highlight_metrics, colors)
     negative_stores = (
         int((pnl_df["operating_profit"] < 0).sum())
         if not pnl_df.empty
@@ -1528,7 +1682,65 @@ def render_dashboard_tab(
         st.info("ページ上部のアラートセンターに重要な注意事項が表示されています。")
 
     st.caption(
-        "指標カードは直近期間の実績と前年比較・目標差分を示しています。下部のタブから詳細分析へ進んでください。"
+        "指標カードと主要KPIハイライトは直近実績と前年比較・目標達成度を示します。下部のタブから詳細分析とレポート出力に進んでください。"
+    )
+
+    store_label = "、".join(filters.stores) if filters.stores else transformers.ALL_STORES
+    category_label = (
+        "、".join(filters.categories)
+        if filters.categories
+        else transformers.ALL_CATEGORIES
+    )
+    channel_label = (
+        "、".join(filters.channels)
+        if filters.channels
+        else transformers.ALL_CHANNELS
+    )
+    filters_section = [
+        f"- 期間: {filters.start_date:%Y-%m-%d} 〜 {filters.end_date:%Y-%m-%d}",
+        f"- 店舗: {store_label}",
+        f"- カテゴリ: {category_label}",
+        f"- チャネル: {channel_label}",
+        f"- 集計粒度: {filters.period_granularity}",
+    ]
+    highlight_section = [
+        f"- 期間売上: {_format_currency(total_sales)}（前年: {previous_sales_text}）",
+        f"- 売上高成長率: {_format_ratio(sales_growth_ratio) if sales_growth_ratio is not None else 'データ不足'}",
+        f"- 営業利益: {_format_currency(operating_profit)}（利益率: {operating_margin_display}）",
+        f"- 粗利率: {_format_ratio(gross_margin_ratio) if gross_margin_ratio is not None else 'データ不足'}",
+        f"- 資金残高: {_format_currency(cash_current['balance'])}（キャッシュ比率: {cash_ratio_display}）",
+        f"- 欠品品目数: {stockouts} 品目",
+    ]
+    action_items: List[str] = []
+    if sales_growth_ratio is not None and sales_growth_ratio < TARGET_SALES_GROWTH:
+        action_items.append(
+            "- 売上高成長率が目標未達です。キャンペーン施策や顧客獲得の強化をご検討ください。"
+        )
+    if operating_margin_ratio is not None and operating_margin_ratio < TARGET_MARGIN_RATE:
+        action_items.append(
+            "- 営業利益率が目標を下回っています。粗利改善や固定費削減の余地を確認してください。"
+        )
+    if cash_ratio is not None and cash_ratio < TARGET_CASH_RATIO:
+        action_items.append(
+            "- キャッシュ比率が低下しています。入金サイクルや在庫回転の改善を検討してください。"
+        )
+    if stockouts > stockout_threshold:
+        action_items.append(
+            f"- 欠品が {stockouts} 品目発生しています。安全在庫を下回る商品の補充を優先してください。"
+        )
+    if not action_items:
+        action_items.append("- 主要な懸念事項はありません。現状の運用を継続してください。")
+
+    st.markdown("#### レポート出力")
+    st.caption("現在のフィルター条件と主要指標をまとめたMarkdown／PDFレポートをダウンロードできます。")
+    report.render_dashboard_report_downloads(
+        "松屋 経営ダッシュボード レポート",
+        [
+            ("フィルター条件", filters_section),
+            ("主要指標", highlight_section),
+            ("アクションメモ", action_items),
+        ],
+        base_file_name=f"matsuya_dashboard_{filters.end_date:%Y%m%d}",
     )
 
     return pnl_df
@@ -3522,6 +3734,214 @@ def render_help_settings_page() -> None:
         """
     )
 
+
+def _render_cash_flow_wizard(
+    inputs_state: Dict[str, float],
+    *,
+    margin_default: float,
+    fixed_default: float,
+    preset_options: Dict[str, Optional[float]],
+    total_sales: float,
+    colors: Dict[str, str],
+) -> Dict[str, object]:
+    """Guide users through cash flow assumptions with a step wizard."""
+
+    steps = [
+        {"title": "粗利率の確認", "description": "直近実績から推奨範囲を提案します。"},
+        {"title": "固定費の確認", "description": "固定費を期間合計（円）で入力します。"},
+        {"title": "目標利益の設定", "description": "テンプレートまたはカスタム値を選択します。"},
+    ]
+    wizard_state = st.session_state.setdefault(
+        "cash_flow_wizard", {"step": 0, "completed": False}
+    )
+    step_index = int(wizard_state.get("step", 0))
+    step_index = max(0, min(step_index, len(steps) - 1))
+    wizard_state["step"] = step_index
+
+    st.markdown("#### 入力ウィザード")
+    st.caption("粗利率 → 固定費 → 目標利益の順に入力し、各ステップでヒントを参照してください。")
+    progress_value = int(((step_index + 1) / len(steps)) * 100)
+    st.progress(progress_value)
+
+    pill_items: List[str] = []
+    active_color = colors["primary"]
+    inactive_color = _adjust_hex_color(colors["neutral"], -0.1)
+    for idx, meta in enumerate(steps):
+        is_active = idx == step_index
+        background = active_color if is_active else inactive_color
+        text_color = "#FFFFFF" if is_active else colors["text"]
+        pill_items.append(
+            f"""
+            <span title="{escape(meta['description'])}" style="display:inline-flex;align-items:center;gap:0.35rem;padding:0.35rem 0.9rem;border-radius:999px;font-size:0.85rem;font-weight:600;background:{background};color:{text_color};">
+                {idx + 1}. {escape(meta['title'])}
+            </span>
+            """
+        )
+    st.markdown(
+        f"<div style='display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:0.8rem;'>{''.join(pill_items)}</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption(f"ステップ {step_index + 1} / {len(steps)}：{steps[step_index]['title']}")
+
+    alerts: List[Tuple[str, str]] = []
+    blocking_error = False
+
+    if step_index == 0:
+        margin_choice = st.slider(
+            "粗利率を設定",  # UI label
+            min_value=0.1,
+            max_value=0.8,
+            value=float(inputs_state.get("gross_margin", margin_default)),
+            step=0.01,
+            format="%0.2f",
+            help="粗利率の推奨レンジ（20%〜70%）を目安に設定してください。",
+        )
+        inputs_state["gross_margin"] = float(margin_choice)
+        st.caption(f"参考値：直近平均 {margin_default:.0%}")
+        if margin_choice < 0.2:
+            alerts.append(
+                (
+                    "warning",
+                    "粗利率が20%未満です。原価や値引き施策を再確認してください。",
+                )
+            )
+        if margin_choice > 0.7:
+            alerts.append(
+                (
+                    "warning",
+                    "粗利率が70%を超えています。入力ミスがないか確認してください。",
+                )
+            )
+    elif step_index == 1:
+        fixed_choice = st.number_input(
+            "固定費（円）",
+            min_value=0.0,
+            value=float(inputs_state.get("fixed_cost", fixed_default)),
+            step=100000.0,
+            format="%0.0f",
+            help="家賃・人件費などの固定費合計を円単位で入力してください。",
+        )
+        inputs_state["fixed_cost"] = float(fixed_choice)
+        st.caption(
+            "※ 金額は円単位・期間合計で入力します。例：5,000,000円"
+        )
+        if fixed_choice <= 0:
+            alerts.append(("error", "固定費は0円より大きい値を入力してください。"))
+        if total_sales and fixed_choice > total_sales * 1.2:
+            alerts.append(
+                (
+                    "warning",
+                    "固定費が期間売上を大幅に上回っています。想定期間を再確認してください。",
+                )
+            )
+    else:
+        preset_keys = list(preset_options.keys())
+        preset_choice = st.selectbox(
+            "目標利益テンプレート",
+            preset_keys,
+            index=(
+                preset_keys.index(inputs_state.get("preset", preset_keys[0]))
+                if inputs_state.get("preset") in preset_keys
+                else 0
+            ),
+            key="cash_flow_wizard_preset",
+            help="テンプレートを選ぶと推奨目標利益が自動で入力されます。",
+        )
+        inputs_state["preset"] = preset_choice
+        preset_target_value = preset_options[preset_choice]
+        target_default = (
+            float(preset_target_value)
+            if preset_target_value is not None
+            else float(inputs_state.get("target_profit", 5_000_000.0))
+        )
+        target_choice = st.number_input(
+            "目標利益（円）",
+            min_value=0.0,
+            value=target_default,
+            step=50000.0,
+            format="%0.0f",
+            disabled=preset_target_value is not None,
+            help="審査資料などに利用する年間（または対象期間）目標利益を入力してください。",
+            key="cash_flow_wizard_target",
+        )
+        if preset_target_value is not None:
+            inputs_state["target_profit"] = float(preset_target_value)
+        else:
+            inputs_state["target_profit"] = float(target_choice)
+        st.caption("※ 金額は円単位です。カスタムを選択すると直接入力できます。")
+        target_profit = float(inputs_state.get("target_profit", 0.0))
+        fixed_cost = float(inputs_state.get("fixed_cost", fixed_default))
+        if fixed_cost and target_profit < fixed_cost * 0.05:
+            alerts.append(
+                (
+                    "warning",
+                    "目標利益が固定費に対して低めです。達成基準を再確認してください。",
+                )
+            )
+        if total_sales and target_profit > total_sales * 0.5:
+            alerts.append(
+                (
+                    "warning",
+                    "目標利益が期間売上の50%を超えています。前提値を確認してください。",
+                )
+            )
+
+    for level, message in alerts:
+        if level == "error":
+            st.error(message)
+        else:
+            st.warning(message)
+    blocking_error = any(level == "error" for level, _ in alerts)
+
+    current_signature = (
+        float(inputs_state.get("gross_margin", margin_default)),
+        float(inputs_state.get("fixed_cost", fixed_default)),
+        float(inputs_state.get("target_profit", 0.0)),
+        str(inputs_state.get("preset", "")),
+    )
+    if wizard_state.get("completed") and wizard_state.get("last_signature") != current_signature:
+        wizard_state["completed"] = False
+
+    nav_cols = st.columns([1, 1, 2])
+    prev_clicked = nav_cols[0].button(
+        "前へ",
+        disabled=step_index == 0,
+        key=f"cash_flow_wizard_prev_{step_index}",
+    )
+    if prev_clicked:
+        wizard_state["step"] = max(0, step_index - 1)
+        wizard_state["completed"] = False
+        trigger_rerun()
+
+    next_label = "入力を確定" if step_index == len(steps) - 1 else "次へ"
+    next_clicked = nav_cols[1].button(
+        next_label,
+        key=f"cash_flow_wizard_next_{step_index}",
+        type="primary" if step_index == len(steps) - 1 else "secondary",
+        disabled=blocking_error,
+    )
+    if next_clicked and not blocking_error:
+        if step_index < len(steps) - 1:
+            wizard_state["step"] = step_index + 1
+        else:
+            wizard_state["completed"] = True
+            wizard_state["last_signature"] = current_signature
+        trigger_rerun()
+
+    helper_message = (
+        "入力を進めると設定値が下部のシミュレーションカードに反映されます。"
+    )
+    nav_cols[2].markdown(
+        f"<div style='font-size:0.8rem;color:{colors['text']};opacity:0.7;'>{escape(helper_message)}</div>",
+        unsafe_allow_html=True,
+    )
+
+    if wizard_state.get("completed") and not blocking_error:
+        st.success("ウィザードの入力内容を保存しました。シミュレーションが最新の値で更新されています。")
+
+    return {"completed": bool(wizard_state.get("completed")), "alerts": alerts}
+
+
 def render_cash_tab(
     sales_df: pd.DataFrame,
     comparison_sales: pd.DataFrame,
@@ -3839,63 +4259,21 @@ def render_cash_tab(
         inputs_state["preset"] = "500万円"
 
     preset_options = {"500万円": 5_000_000.0, "1,000万円": 10_000_000.0, "カスタム": None}
-    preset_keys = list(preset_options.keys())
-    preset_value = inputs_state.get("preset", preset_keys[0])
-    preset_index = preset_keys.index(preset_value) if preset_value in preset_keys else 0
 
-    with st.form("cash_flow_form"):
-        col1, col2, col3 = st.columns(3)
-        margin_choice = col1.slider(
-            "粗利率",
-            min_value=0.1,
-            max_value=0.8,
-            value=float(inputs_state.get("gross_margin", margin_default)),
-            step=0.01,
-            format="%0.2f",
-        )
-        fixed_choice = col2.number_input(
-            "固定費（円）",
-            min_value=0.0,
-            value=float(inputs_state.get("fixed_cost", fixed_default)),
-            step=100000.0,
-            format="%0.0f",
-        )
-        preset_choice = col3.selectbox(
-            "目標利益テンプレート",
-            preset_keys,
-            index=preset_index,
-            key="cash_flow_preset_select",
-        )
-        preset_target_value = preset_options[preset_choice]
-        target_default = (
-            float(preset_target_value)
-            if preset_target_value is not None
-            else float(inputs_state.get("target_profit", 5_000_000.0))
-        )
-        target_choice = col3.number_input(
-            "目標利益（円）",
-            min_value=0.0,
-            value=target_default,
-            step=50000.0,
-            format="%0.0f",
-            disabled=preset_target_value is not None,
-        )
-        submitted = st.form_submit_button("試算する", type="primary")
+    wizard_result = _render_cash_flow_wizard(
+        inputs_state,
+        margin_default=margin_default,
+        fixed_default=fixed_default,
+        preset_options=preset_options,
+        total_sales=total_sales,
+        colors=colors,
+    )
 
-    if submitted:
-        target_value = (
-            float(preset_target_value)
-            if preset_target_value is not None
-            else float(target_choice)
-        )
-        inputs_state.update(
-            {
-                "gross_margin": float(margin_choice),
-                "fixed_cost": float(fixed_choice),
-                "target_profit": target_value,
-                "preset": preset_choice,
-            }
-        )
+    wizard_completed = bool(wizard_result.get("completed"))
+    if not wizard_completed and wizard_result.get("alerts"):
+        st.caption("※ ウィザード内の警告を解消すると次のステップに進めます。")
+    elif not wizard_completed:
+        st.caption("※ ウィザードを最後まで完了すると入力内容が確定します。")
 
     if inputs_state.get("preset") != "カスタム":
         preset_target = preset_options.get(inputs_state.get("preset"))
@@ -3905,6 +4283,61 @@ def render_cash_tab(
     gross_margin = float(inputs_state.get("gross_margin", margin_default))
     fixed_cost = float(inputs_state.get("fixed_cost", fixed_default))
     target_profit = float(inputs_state.get("target_profit", 5_000_000.0))
+
+    summary_html = f"""
+    <div style="border:1px solid rgba(148,163,184,0.35);border-radius:0.9rem;padding:0.9rem 1.2rem;background-color:rgba(255,255,255,0.85);display:flex;flex-wrap:wrap;gap:1.5rem;margin-top:0.8rem;margin-bottom:0.6rem;">
+        <div>
+            <div style="font-size:0.75rem;color:#64748b;">粗利率</div>
+            <div style="font-size:1.6rem;font-weight:600;color:{colors['text']};">{gross_margin*100:.1f}%</div>
+        </div>
+        <div>
+            <div style="font-size:0.75rem;color:#64748b;">固定費</div>
+            <div style="font-size:1.6rem;font-weight:600;color:{colors['text']};">{fixed_cost:,.0f}<span style="font-size:0.9rem;"> 円</span></div>
+        </div>
+        <div>
+            <div style="font-size:0.75rem;color:#64748b;">目標利益</div>
+            <div style="font-size:1.6rem;font-weight:600;color:{colors['text']};">{target_profit:,.0f}<span style="font-size:0.9rem;"> 円</span></div>
+        </div>
+    </div>
+    """
+    st.markdown(summary_html, unsafe_allow_html=True)
+    st.caption("粗利率は割合（%）、固定費・目標利益は円単位の入力値です。")
+
+    validation_messages: List[Tuple[str, str]] = []
+    if total_sales and fixed_cost > total_sales:
+        validation_messages.append(
+            (
+                "warning",
+                f"固定費（{fixed_cost:,.0f}円）が期間売上（{total_sales:,.0f}円）を上回っています。期間設定や金額を再確認してください。",
+            )
+        )
+    if gross_margin < 0.2:
+        validation_messages.append(
+            (
+                "warning",
+                "粗利率が20%未満です。商品構成や原価率の調整を検討してください。",
+            )
+        )
+    if target_profit > 0 and target_profit < fixed_cost * 0.05:
+        validation_messages.append(
+            (
+                "warning",
+                "目標利益が固定費に対して小さいため、達成しても収益改善効果が限定的です。",
+            )
+        )
+    if total_sales and target_profit > total_sales * 0.6:
+        validation_messages.append(
+            (
+                "warning",
+                "目標利益が期間売上の60%を超えています。現実的な目標か確認してください。",
+            )
+        )
+
+    for level, message in validation_messages:
+        if level == "error":
+            st.error(message)
+        else:
+            st.warning(message)
 
     inputs = simulation.SimulationInputs(
         gross_margin=gross_margin,

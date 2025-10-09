@@ -4303,7 +4303,14 @@ def render_cash_tab(
             st.session_state["benchmark_df"] = benchmark_df
             st.success("ベンチマークデータを更新しました。")
 
-    benchmark_df = st.session_state.get("benchmark_df", DEFAULT_BENCHMARKS.copy())
+    benchmark_df = st.session_state.get("benchmark_df")
+    required_benchmark_columns = {"metric", "industry_avg", "top_quartile", "unit"}
+    if not isinstance(benchmark_df, pd.DataFrame) or benchmark_df.empty:
+        benchmark_df = DEFAULT_BENCHMARKS.copy()
+    elif not required_benchmark_columns.issubset(benchmark_df.columns):
+        benchmark_df = DEFAULT_BENCHMARKS.copy()
+    else:
+        benchmark_df = benchmark_df.copy()
     previous_sales_value = (
         float(comparison_sales["sales_amount"].sum()) if not comparison_sales.empty else None
     )

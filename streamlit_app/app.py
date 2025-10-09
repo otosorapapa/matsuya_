@@ -21,9 +21,15 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from streamlit_app import data_loader, rerun as trigger_rerun, transformers
-from streamlit_app.analytics import inventory, products, profitability, sales, simulation
-from streamlit_app.components import import_dashboard, report, sidebar
-from streamlit_app.integrations import IntegrationResult, available_providers, fetch_datasets
+from streamlit_app.analytics import advisor, inventory, products, profitability, sales, simulation
+from streamlit_app.components import design_system, import_dashboard, report, sidebar
+from streamlit_app.integrations import (
+    DEFAULT_BENCHMARKS,
+    IntegrationResult,
+    available_providers,
+    fetch_benchmark_indicators,
+    fetch_datasets,
+)
 from streamlit_app.theme import inject_custom_css
 
 
@@ -4384,27 +4390,35 @@ def render_cash_tab(
     results_col, saved_col = st.columns([3, 2])
     with results_col:
         progress_display = f"{progress_ratio:.1%}" if target_sales_value > 0 else "ー"
-        summary_card_html = f"""
-        <div style="border:1px solid #dee2e6;border-radius:0.75rem;padding:1.5rem;background-color:#ffffff;margin-bottom:1rem;">
-            <div style="font-size:0.9rem;color:#6c757d;">損益分岐点売上</div>
-            <div style="font-size:2.6rem;font-weight:600;line-height:1.1;">{breakeven_sales_value:,.0f}<span style="font-size:1.2rem;"> 円</span></div>
-            <div style="margin-top:1.2rem;display:flex;flex-wrap:wrap;gap:1.5rem;">
-                <div>
-                    <div style="font-size:0.85rem;color:#6c757d;">目標利益達成に必要な売上</div>
-                    <div style="font-size:1.2rem;font-weight:500;">{target_sales_value:,.0f} 円</div>
-                </div>
-                <div>
-                    <div style="font-size:0.85rem;color:#6c757d;">現状売上</div>
-                    <div style="font-size:1.2rem;font-weight:500;">{current_sales_value:,.0f} 円</div>
-                </div>
-                <div>
-                    <div style="font-size:0.85rem;color:#6c757d;">目標達成率</div>
-                    <div style="font-size:1.2rem;font-weight:500;">{progress_display}</div>
-                </div>
-            </div>
-        </div>
-        """
-        st.markdown(summary_card_html, unsafe_allow_html=True)
+        attainment_gap = current_sales_value - target_sales_value
+        chip_label = None
+        chip_severity = "info"
+        if target_sales_value > 0:
+            chip_label = f"達成率 {progress_display}"
+            chip_severity = "success" if reached_target else "warning"
+        design_system.render_section_title(
+            "シミュレーション要約",
+            chip=chip_label,
+            severity=chip_severity,
+        )
+        summary_metrics = [
+            design_system.Metric(
+                label="損益分岐点売上",
+                value=f"{breakeven_sales_value:,.0f} 円",
+                caption="固定費÷粗利率で算出",
+            ),
+            design_system.Metric(
+                label="目標利益達成に必要な売上",
+                value=f"{target_sales_value:,.0f} 円",
+                caption="目標利益+固定費に基づく",
+            ),
+            design_system.Metric(
+                label="現状売上",
+                value=f"{current_sales_value:,.0f} 円",
+                caption=f"目標差 {attainment_gap:+,.0f} 円",
+            ),
+        ]
+        design_system.render_metric_grid(summary_metrics)
 
         success_color = colors["success"]
         error_color = colors["error"]
@@ -4508,6 +4522,317 @@ def render_cash_tab(
             key="save_simulation_scenario",
             on_click=_save_scenario,
         )
+
+    monte_carlo_config = simulation.MonteCarloConfig(
+        iterations=3000,
+        demand_growth_mean=0.01,
+        demand_growth_std=0.04,
+        margin_std=0.025,
+        fixed_cost_std=0.02,
+    )
+    monte_carlo_result = simulation.run_monte_carlo(
+        inputs,
+        base_sales=max(current_sales_value, 1.0),
+        config=monte_carlo_config,
+    )
+    sensitivity_df = simulation.sensitivity_analysis(
+        inputs,
+        base_sales=max(current_sales_value, 1.0),
+    )
+
+    probability = monte_carlo_result.probability_of_target
+    probability_chip = f"達成確率 {probability:.0%}"
+    probability_severity = "warning"
+    if probability >= 0.7:
+        probability_severity = "success"
+    elif probability < 0.4:
+        probability_severity = "danger"
+
+    st.divider()
+    design_system.render_section_title(
+        "リスク分析",
+        chip=probability_chip,
+        severity=probability_severity,
+    )
+    risk_cols = st.columns([3, 2], gap="large")
+    probability_colors = {
+        "目標達成": colors["success"],
+        "未達": colors["error"],
+    }
+    with risk_cols[0]:
+        trial_display = monte_carlo_result.trials.copy()
+        trial_display["達成状況"] = trial_display["achieved_target"].map(
+            {True: "目標達成", False: "未達"}
+        )
+        dist_chart = px.histogram(
+            trial_display,
+            x="operating_profit",
+            nbins=40,
+            color="達成状況",
+            color_discrete_map=probability_colors,
+            labels={
+                "operating_profit": "営業利益（円）",
+                "達成状況": "目標達成",
+            },
+        )
+        dist_chart.add_vline(
+            x=inputs.target_profit,
+            line_dash="dash",
+            line_color=colors["accent"],
+            annotation_text="目標利益",
+            annotation_position="top left",
+        )
+        dist_chart.update_layout(
+            bargap=0.02,
+            showlegend=True,
+            legend=dict(title="目標達成"),
+        )
+        st.plotly_chart(dist_chart, use_container_width=True)
+
+    with risk_cols[1]:
+        summary_lookup = monte_carlo_result.summary.set_index("percentile")
+        percentile_75 = float(summary_lookup.loc[75, "operating_profit"])
+        percentile_25 = float(summary_lookup.loc[25, "operating_profit"])
+        highlight_metrics = [
+            design_system.Metric(
+                label="期待営業利益",
+                value=f"{monte_carlo_result.expected_profit:,.0f} 円",
+                caption="シミュレーション平均",
+            ),
+            design_system.Metric(
+                label="P75 営業利益",
+                value=f"{percentile_75:,.0f} 円",
+                caption="上振れシナリオ",
+            ),
+            design_system.Metric(
+                label="P25 営業利益",
+                value=f"{percentile_25:,.0f} 円",
+                caption="下振れシナリオ",
+            ),
+        ]
+        design_system.render_metric_grid(highlight_metrics)
+        percentile_display = monte_carlo_result.summary.assign(
+            percentile=lambda df: df["percentile"].astype(int).astype(str) + "%"
+        )
+        percentile_display = percentile_display.rename(
+            columns={
+                "percentile": "パーセンタイル",
+                "sales": "売上（円）",
+                "operating_profit": "営業利益（円）",
+            }
+        )
+        st.dataframe(
+            percentile_display.style.format(
+                {"売上（円）": "{:,.0f}", "営業利益（円）": "{:,.0f}"}
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    st.markdown("##### 感度分析")
+    sensitivity_chart = px.line(
+        sensitivity_df,
+        x="change_pct",
+        y="operating_profit",
+        color="parameter",
+        markers=True,
+        labels={
+            "change_pct": "変化率",
+            "operating_profit": "営業利益（円）",
+            "parameter": "指標",
+        },
+    )
+    sensitivity_chart.update_xaxes(tickformat=".0%")
+    sensitivity_chart.update_layout(legend=dict(title="指標"))
+    sensitivity_chart.add_hline(
+        y=inputs.target_profit,
+        line_dash="dash",
+        line_color=colors["accent"],
+        annotation_text="目標利益",
+        annotation_position="top left",
+    )
+    st.plotly_chart(sensitivity_chart, use_container_width=True)
+
+    parameter_labels = {
+        "gross_margin": "粗利率",
+        "fixed_cost": "固定費",
+        "demand": "需要",
+    }
+    sensitivity_records = []
+    for parameter, group in sensitivity_df.groupby("parameter"):
+        positives = group.loc[group["gap_to_target"] >= 0, "change_pct"]
+        change_needed = float(positives.min()) if not positives.empty else None
+        sensitivity_records.append(
+            {
+                "指標": parameter_labels.get(parameter, parameter),
+                "最小営業利益": float(group["operating_profit"].min()),
+                "最大営業利益": float(group["operating_profit"].max()),
+                "目標達成に必要な変化率": change_needed,
+            }
+        )
+    sensitivity_summary = pd.DataFrame(sensitivity_records)
+    if not sensitivity_summary.empty:
+        st.dataframe(
+            sensitivity_summary.style.format(
+                {
+                    "最小営業利益": "{:,.0f}",
+                    "最大営業利益": "{:,.0f}",
+                    "目標達成に必要な変化率": "{:.1%}",
+                }
+            ),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    if "benchmark_params" not in st.session_state:
+        st.session_state["benchmark_params"] = {
+            "industry": "外食",
+            "region": "全国",
+            "api_url": "",
+            "api_key": "",
+        }
+
+    benchmark_params = st.session_state["benchmark_params"]
+    industry_options = ["外食", "小売", "飲食チェーン"]
+    region_options = ["全国", "関東", "関西", "北海道・東北"]
+    with st.expander("業界ベンチマークを取得", expanded=False):
+        with st.form("benchmark_fetch_form"):
+            industry = st.selectbox(
+                "業界カテゴリ",
+                industry_options,
+                index=industry_options.index(benchmark_params.get("industry", industry_options[0]))
+                if benchmark_params.get("industry") in industry_options
+                else 0,
+            )
+            region = st.selectbox(
+                "地域",
+                region_options,
+                index=region_options.index(benchmark_params.get("region", region_options[0]))
+                if benchmark_params.get("region") in region_options
+                else 0,
+            )
+            api_url = st.text_input(
+                "APIエンドポイント (未入力の場合はサンプルデータ)",
+                value=benchmark_params.get("api_url", ""),
+            )
+            api_key = st.text_input(
+                "APIキー (任意)",
+                value=benchmark_params.get("api_key", ""),
+                type="password",
+            )
+            submitted_benchmark = st.form_submit_button("ベンチマークを取得", type="primary")
+        if submitted_benchmark:
+            st.session_state["benchmark_params"].update(
+                {"industry": industry, "region": region, "api_url": api_url, "api_key": api_key}
+            )
+            selected_metrics = ["operating_margin", "sales_growth", "inventory_turnover"]
+            benchmark_df = fetch_benchmark_indicators(
+                api_url=api_url.strip(),
+                industry=industry,
+                region=None if region == "全国" else region,
+                metrics=selected_metrics,
+                api_key=api_key or None,
+            )
+            st.session_state["benchmark_df"] = benchmark_df
+            st.success("ベンチマークデータを更新しました。")
+
+    benchmark_df = st.session_state.get("benchmark_df", DEFAULT_BENCHMARKS.copy())
+    previous_sales_value = (
+        float(comparison_sales["sales_amount"].sum()) if not comparison_sales.empty else None
+    )
+    sales_growth_rate = _compute_growth(current_sales_value, previous_sales_value)
+    overview_for_bench = inventory.inventory_overview(
+        sales_df,
+        inventory_df,
+        start_date=filters.start_date,
+        end_date=filters.end_date,
+    )
+    turnover_ratio = (
+        float(overview_for_bench.get("turnover_ratio", pd.Series(dtype=float)).mean())
+        if not overview_for_bench.empty and "turnover_ratio" in overview_for_bench
+        else None
+    )
+
+    operating_profit_total = float(pnl_df.get("operating_profit", pd.Series(dtype=float)).sum())
+    operating_margin_value = (
+        operating_profit_total / current_sales_value if current_sales_value else 0.0
+    )
+
+    company_metrics = {
+        "operating_margin": operating_margin_value,
+        "sales_growth": sales_growth_rate,
+        "inventory_turnover": turnover_ratio,
+    }
+    metric_labels = {
+        "operating_margin": "営業利益率",
+        "sales_growth": "売上成長率",
+        "inventory_turnover": "在庫回転率",
+    }
+
+    if not benchmark_df.empty:
+        display_df = benchmark_df.copy()
+        display_df["指標"] = display_df["metric"].map(metric_labels).fillna(display_df["metric"])
+        display_df["自社実績"] = display_df["metric"].map(company_metrics)
+        display_df["業界平均との差"] = display_df["自社実績"] - display_df["industry_avg"]
+
+        def _format_indicator(value: float | None, unit: str) -> str:
+            if value is None or (isinstance(value, float) and pd.isna(value)):
+                return "-"
+            if unit == "ratio":
+                return f"{value * 100:.1f}%"
+            return f"{value:,.2f}"
+
+        display_df["業界平均"] = [
+            _format_indicator(val, unit)
+            for val, unit in zip(display_df["industry_avg"], display_df["unit"])
+        ]
+        display_df["上位25%水準"] = [
+            _format_indicator(val, unit)
+            for val, unit in zip(display_df["top_quartile"], display_df["unit"])
+        ]
+        display_df["自社実績"] = [
+            _format_indicator(val, unit)
+            for val, unit in zip(display_df["自社実績"], display_df["unit"])
+        ]
+        display_df["業界平均との差"] = [
+            _format_indicator(val, unit)
+            for val, unit in zip(display_df["業界平均との差"], display_df["unit"])
+        ]
+        display_table = display_df[
+            ["指標", "業界平均", "上位25%水準", "自社実績", "業界平均との差"]
+        ]
+        design_system.render_section_title("ベンチマーク比較", chip="外部データ", severity="info")
+        design_system.render_surface(display_table.to_html(index=False, escape=False))
+
+    stockout_items = 0
+    if not overview_for_bench.empty and "stock_status" in overview_for_bench:
+        stockout_items = int((overview_for_bench["stock_status"] == "在庫切れ").sum())
+
+    advice_context = advisor.AdvisorContext(
+        total_sales=current_sales_value,
+        operating_profit=operating_profit_total,
+        stockout_items=stockout_items,
+        cash_balance=cash_current.get("balance", 0.0),
+        target_profit=target_profit,
+    )
+    advice_items = advisor.generate_advice(
+        advice_context,
+        benchmark_df=benchmark_df,
+        monte_carlo_probability=probability,
+        expected_profit=monte_carlo_result.expected_profit,
+        sensitivity_df=sensitivity_df,
+    )
+    design_system.render_section_title("AIによる経営アドバイス", chip="ベータ版", severity="info")
+    design_insights = [
+        design_system.Insight(
+            title=item.title,
+            description=item.description,
+            severity=item.severity,
+            tags=list(item.tags),
+        )
+        for item in advice_items
+    ]
+    design_system.render_insights(design_insights)
 
     if "saved_scenarios" not in st.session_state:
         st.session_state["saved_scenarios"] = []

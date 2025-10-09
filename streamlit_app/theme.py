@@ -12,17 +12,32 @@ DESIGN_TOKENS = {
     "accentColor": "#1E88E5",
     "backgroundColor": "#F7F8FA",
     "cardBackground": "#FFFFFF",
+    "surfaceMuted": "#EEF2F6",
     "successColor": "#3FB27E",
     "warningColor": "#E9A13B",
     "errorColor": "#E55353",
+    "infoColor": "#2563EB",
     "fontFamilyBase": "'Inter', 'Source Sans 3', sans-serif",
     "fontFamilyNumeric": "'Roboto Mono', monospace",
     "heading1Size": "28px",
     "heading2Size": "22px",
+    "heading3Size": "18px",
     "bodySize": "16px",
     "smallTextSize": "14px",
+    "microTextSize": "12px",
     "spacingUnit": "8px",
+    "radiusSm": "6px",
+    "radiusMd": "12px",
+    "radiusLg": "18px",
+    "shadowSoft": "0 2px 6px rgba(15, 23, 42, 0.08)",
+    "shadowLifted": "0 12px 30px rgba(15, 23, 42, 0.16)",
 }
+
+
+def get_design_tokens() -> Dict[str, str]:
+    """Return a copy of the global design token dictionary."""
+
+    return dict(DESIGN_TOKENS)
 
 
 def build_custom_css() -> str:
@@ -37,16 +52,25 @@ def build_custom_css() -> str:
             --color-accent: {DESIGN_TOKENS['accentColor']};
             --color-background: {DESIGN_TOKENS['backgroundColor']};
             --color-surface: {DESIGN_TOKENS['cardBackground']};
+            --color-surface-muted: {DESIGN_TOKENS['surfaceMuted']};
             --color-success: {DESIGN_TOKENS['successColor']};
             --color-warning: {DESIGN_TOKENS['warningColor']};
             --color-error: {DESIGN_TOKENS['errorColor']};
+            --color-info: {DESIGN_TOKENS['infoColor']};
             --font-base: {DESIGN_TOKENS['fontFamilyBase']};
             --font-numeric: {DESIGN_TOKENS['fontFamilyNumeric']};
             --heading-1: {DESIGN_TOKENS['heading1Size']};
             --heading-2: {DESIGN_TOKENS['heading2Size']};
+            --heading-3: {DESIGN_TOKENS['heading3Size']};
             --text-body: {DESIGN_TOKENS['bodySize']};
             --text-small: {DESIGN_TOKENS['smallTextSize']};
+            --text-micro: {DESIGN_TOKENS['microTextSize']};
             --spacing-unit: {DESIGN_TOKENS['spacingUnit']};
+            --radius-sm: {DESIGN_TOKENS['radiusSm']};
+            --radius-md: {DESIGN_TOKENS['radiusMd']};
+            --radius-lg: {DESIGN_TOKENS['radiusLg']};
+            --shadow-soft: {DESIGN_TOKENS['shadowSoft']};
+            --shadow-lifted: {DESIGN_TOKENS['shadowLifted']};
         }}
 
         html, body, .stApp {{
@@ -183,6 +207,120 @@ def build_custom_css() -> str:
             background-color: var(--color-primary);
             color: #FFFFFF;
         }}
+
+        .ds-surface {{
+            background-color: var(--color-surface);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-soft);
+            padding: calc(var(--spacing-unit) * 2);
+            border: 1px solid rgba(11, 31, 59, 0.05);
+        }}
+
+        .ds-surface.elevated {{
+            box-shadow: var(--shadow-lifted);
+        }}
+
+        .ds-surface.muted {{
+            background-color: var(--color-surface-muted);
+        }}
+
+        .ds-section-title {{
+            font-size: var(--heading-3);
+            font-weight: 600;
+            color: var(--color-primary);
+            margin-bottom: calc(var(--spacing-unit) * 1.5);
+        }}
+
+        .ds-metric-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: calc(var(--spacing-unit) * 1.5);
+        }}
+
+        .ds-metric {{
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 0.5);
+        }}
+
+        .ds-metric .label {{
+            font-size: var(--text-small);
+            color: var(--color-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }}
+
+        .ds-metric .value {{
+            font-size: 1.6rem;
+            font-weight: 600;
+            color: var(--color-primary);
+        }}
+
+        .ds-metric .caption {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.7);
+        }}
+
+        .ds-chip {{
+            display: inline-flex;
+            align-items: center;
+            gap: calc(var(--spacing-unit) * 0.5);
+            padding: calc(var(--spacing-unit) * 0.5) calc(var(--spacing-unit) * 0.75);
+            border-radius: 999px;
+            font-size: var(--text-small);
+            font-weight: 500;
+            background-color: var(--color-surface-muted);
+            color: var(--color-primary);
+        }}
+
+        .ds-chip.success {{
+            background-color: rgba(63, 178, 126, 0.16);
+            color: var(--color-success);
+        }}
+
+        .ds-chip.warning {{
+            background-color: rgba(233, 161, 59, 0.18);
+            color: var(--color-warning);
+        }}
+
+        .ds-chip.danger {{
+            background-color: rgba(229, 83, 83, 0.18);
+            color: var(--color-error);
+        }}
+
+        .ds-chip.info {{
+            background-color: rgba(30, 136, 229, 0.14);
+            color: var(--color-info);
+        }}
+
+        .ds-insight-list {{
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 1.5);
+        }}
+
+        .ds-insight {{
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 0.6);
+            padding: calc(var(--spacing-unit) * 1.5);
+            border-radius: var(--radius-md);
+            border: 1px solid rgba(11, 31, 59, 0.08);
+            background-color: var(--color-surface);
+        }}
+
+        .ds-insight strong {{
+            font-size: 1rem;
+            color: var(--color-primary);
+        }}
+
+        .ds-insight .meta {{
+            display: flex;
+            gap: calc(var(--spacing-unit));
+            flex-wrap: wrap;
+            font-size: var(--text-small);
+            color: var(--color-secondary);
+        }}
         </style>
         """
     ).strip()
@@ -198,4 +336,9 @@ def inject_custom_css() -> None:
     st.session_state["_theme_css_injected"] = True
 
 
-__all__ = ["DESIGN_TOKENS", "build_custom_css", "inject_custom_css"]
+__all__ = [
+    "DESIGN_TOKENS",
+    "get_design_tokens",
+    "build_custom_css",
+    "inject_custom_css",
+]

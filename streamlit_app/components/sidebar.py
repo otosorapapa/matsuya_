@@ -66,6 +66,11 @@ BREAKDOWN_OPTIONS = {
 }
 
 
+LANGUAGE_OPTIONS = {"日本語": "ja", "English": "en"}
+THEME_OPTIONS = {"ライト": "light", "ダーク": "dark"}
+PALETTE_OPTIONS = {"標準": "default", "色覚多様性": "colorblind"}
+
+
 def _resolve_date_range(value: Tuple[date, date]) -> Tuple[date, date]:
     if isinstance(value, tuple) and len(value) == 2:
         return value
@@ -96,6 +101,36 @@ def render_sidebar(
     show_filters: bool = True,
     dataset_status: Optional[Dict[str, Dict[str, object]]] = None,
 ) -> Dict[str, object]:
+    preferences = st.session_state.setdefault(
+        "ui_preferences",
+        {"language": "ja", "theme": "light", "palette": "default"},
+    )
+    st.sidebar.header("表示設定")
+    language_label = st.sidebar.selectbox(
+        "言語 / Language",
+        list(LANGUAGE_OPTIONS.keys()),
+        index=list(LANGUAGE_OPTIONS.values()).index(preferences.get("language", "ja")),
+    )
+    theme_label = st.sidebar.selectbox(
+        "テーマ",
+        list(THEME_OPTIONS.keys()),
+        index=list(THEME_OPTIONS.values()).index(preferences.get("theme", "light")),
+    )
+    palette_label = st.sidebar.selectbox(
+        "カラーパレット",
+        list(PALETTE_OPTIONS.keys()),
+        index=list(PALETTE_OPTIONS.values()).index(preferences.get("palette", "default")),
+    )
+    updated_preferences = {
+        "language": LANGUAGE_OPTIONS[language_label],
+        "theme": THEME_OPTIONS[theme_label],
+        "palette": PALETTE_OPTIONS[palette_label],
+    }
+    if updated_preferences != preferences:
+        st.session_state["ui_preferences"] = updated_preferences
+        st.session_state.pop("_theme_css_key", None)
+        trigger_rerun()
+
     st.sidebar.header("データソース")
     mode_label = st.sidebar.radio("連携方法", ["CSVアップロード", "API連携"])
     data_source_mode = "csv" if mode_label == "CSVアップロード" else "api"
@@ -105,10 +140,12 @@ def render_sidebar(
         "provider": providers[0] if providers else "",
         "api_key": "",
         "api_secret": "",
+        "base_url": "",
         "start_date": default_period[0],
         "end_date": default_period[1],
         "fetch_triggered": False,
         "auto_daily": False,
+        "rpa_url": "",
     }
 
     if data_source_mode == "csv":
@@ -123,6 +160,11 @@ def render_sidebar(
                 provider = st.selectbox("連携先", providers)
                 api_key = st.text_input("APIキー", type="password")
                 api_secret = st.text_input("APIシークレット", type="password")
+                base_url = st.text_input(
+                    "APIベースURL",
+                    value=preferences.get("api_base_url", ""),
+                    help="https://から始まるAPIのエンドポイントURLを入力します。",
+                )
                 api_range = st.date_input(
                     "取得期間",
                     value=(default_start, default_end),
@@ -130,17 +172,25 @@ def render_sidebar(
                 fetch_triggered = st.form_submit_button("データ取得")
             start_date, end_date = _resolve_date_range(api_range)
             auto_daily = st.sidebar.checkbox("前日データを自動取得", key="auto_daily_toggle")
+            rpa_url = st.sidebar.text_input(
+                "CSV自動取得URL (RPA)",
+                value=preferences.get("rpa_url", ""),
+                help="RPAやBotで取得したCSVを公開しているURLを指定すると自動取込します。",
+            )
             api_state.update(
                 {
                     "provider": provider,
                     "api_key": api_key,
                     "api_secret": api_secret,
+                    "base_url": base_url,
                     "start_date": start_date,
                     "end_date": end_date,
                     "fetch_triggered": fetch_triggered,
                     "auto_daily": auto_daily,
+                    "rpa_url": rpa_url,
                 }
             )
+            preferences.update({"api_base_url": base_url, "rpa_url": rpa_url})
         else:
             st.sidebar.warning("利用可能なAPI連携先が設定されていません。CSVをアップロードしてください。")
 

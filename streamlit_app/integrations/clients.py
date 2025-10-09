@@ -1,13 +1,18 @@
 """Client abstractions for connecting to external systems."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import date
 from typing import Dict, Optional, Tuple
 
 import pandas as pd
+import requests
 
 from streamlit_app import data_loader
+
+
+logger = logging.getLogger(__name__)
 
 
 DatasetBundle = Dict[str, pd.DataFrame]
@@ -49,9 +54,51 @@ class BaseIntegrationClient:
         return filtered
 
 
-class POSClient(BaseIntegrationClient):
-    def __init__(self) -> None:
-        super().__init__(provider_label="POSレジ")
+class RESTIntegrationClient(BaseIntegrationClient):
+    """Base client for REST API integrations with graceful CSV fallbacks."""
+
+    dataset_endpoints: Dict[str, str]
+
+    def __init__(self, provider_label: str, dataset_endpoints: Dict[str, str]):
+        super().__init__(provider_label=provider_label)
+        self.dataset_endpoints = dataset_endpoints
+
+    def _request_dataset(
+        self,
+        endpoint: str,
+        start_date: date,
+        end_date: date,
+        credentials: Optional[Dict[str, str]],
+    ) -> Optional[pd.DataFrame]:
+        """Attempt to retrieve a dataset via REST. Returns ``None`` on failure."""
+
+        if not endpoint:
+            return None
+        base_url = (credentials or {}).get("base_url")
+        if not base_url:
+            return None
+        url = endpoint
+        if not url.startswith("http"):
+            url = base_url.rstrip("/") + "/" + endpoint.lstrip("/")
+        headers = {}
+        token = (credentials or {}).get("api_key")
+        secret = (credentials or {}).get("api_secret")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        if secret and "Authorization" not in headers:
+            headers["X-API-SECRET"] = secret
+        params = {"start_date": start_date.isoformat(), "end_date": end_date.isoformat()}
+        try:
+            response = requests.get(url, params=params, headers=headers, timeout=15)
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict) and "data" in payload:
+                payload = payload.get("data")
+            frame = pd.DataFrame(payload)
+            return frame
+        except Exception as exc:  # pragma: no cover - network guard
+            logger.warning("Failed to fetch %s from %s: %s", self.provider_label, url, exc)
+        return None
 
     def fetch(
         self,
@@ -60,51 +107,78 @@ class POSClient(BaseIntegrationClient):
         credentials: Optional[Dict[str, str]] = None,
     ) -> Tuple[DatasetBundle, str]:
         datasets = self._base_datasets()
-        datasets["sales"] = self._filter_sales_range(
-            datasets["sales"], start_date, end_date
+        fetched: Dict[str, int] = {}
+        for dataset, endpoint in self.dataset_endpoints.items():
+            frame = self._request_dataset(endpoint, start_date, end_date, credentials)
+            if frame is None or frame.empty:
+                fetched[dataset] = len(datasets.get(dataset, []))
+                continue
+            if dataset == "sales" and "date" in frame.columns:
+                frame["date"] = pd.to_datetime(frame["date"], errors="coerce")
+                frame = frame.dropna(subset=["date"])  # type: ignore[arg-type]
+            datasets[dataset] = frame
+            fetched[dataset] = len(frame)
+        message = "、".join(
+            f"{dataset}:{count:,}件" for dataset, count in fetched.items() if count
         )
-        message = "POSシステムから日次売上データを取得しました。"
+        if not message:
+            message = "APIレスポンスが無いためサンプルデータを利用しました。"
+        else:
+            message = f"{self.provider_label} APIから {message} を取得しました。"
+        if "sales" in datasets:
+            datasets["sales"] = self._filter_sales_range(
+                datasets["sales"], start_date, end_date
+            )
         return datasets, message
 
 
-class FreeeAccountingClient(BaseIntegrationClient):
+class POSClient(RESTIntegrationClient):
     def __init__(self) -> None:
-        super().__init__(provider_label="freee会計")
-
-    def fetch(
-        self,
-        start_date: date,
-        end_date: date,
-        credentials: Optional[Dict[str, str]] = None,
-    ) -> Tuple[DatasetBundle, str]:
-        datasets = self._base_datasets()
-        datasets["sales"] = self._filter_sales_range(
-            datasets["sales"], start_date, end_date
+        super().__init__(
+            provider_label="POSレジ",
+            dataset_endpoints={
+                "sales": "api/pos/sales",
+                "inventory": "api/pos/inventory",
+            },
         )
-        message = "freee会計APIと同期し、売上・仕入データを取得しました。"
-        return datasets, message
 
 
-class YayoiAccountingClient(BaseIntegrationClient):
+class InventoryControlClient(RESTIntegrationClient):
     def __init__(self) -> None:
-        super().__init__(provider_label="弥生会計")
-
-    def fetch(
-        self,
-        start_date: date,
-        end_date: date,
-        credentials: Optional[Dict[str, str]] = None,
-    ) -> Tuple[DatasetBundle, str]:
-        datasets = self._base_datasets()
-        datasets["sales"] = self._filter_sales_range(
-            datasets["sales"], start_date, end_date
+        super().__init__(
+            provider_label="在庫管理システム",
+            dataset_endpoints={
+                "inventory": "api/inventory/stock_levels",
+                "sales": "api/inventory/shipments",
+            },
         )
-        message = "弥生会計から売上・仕入データを取り込みました。"
-        return datasets, message
+
+
+class FreeeAccountingClient(RESTIntegrationClient):
+    def __init__(self) -> None:
+        super().__init__(
+            provider_label="freee会計",
+            dataset_endpoints={
+                "sales": "api/accounting/sales",
+                "fixed_costs": "api/accounting/fixed_costs",
+            },
+        )
+
+
+class YayoiAccountingClient(RESTIntegrationClient):
+    def __init__(self) -> None:
+        super().__init__(
+            provider_label="弥生会計",
+            dataset_endpoints={
+                "sales": "api/yayoi/sales",
+                "fixed_costs": "api/yayoi/fixed_costs",
+            },
+        )
 
 
 PROVIDER_CLIENTS: Dict[str, BaseIntegrationClient] = {
     "POSレジ": POSClient(),
+    "在庫管理システム": InventoryControlClient(),
     "freee会計": FreeeAccountingClient(),
     "弥生会計": YayoiAccountingClient(),
 }

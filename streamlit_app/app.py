@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import sys
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from html import escape
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple, TypeVar
@@ -21,19 +21,107 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 from streamlit_app import data_loader, rerun as trigger_rerun, transformers
-from streamlit_app.analytics import advisor, inventory, products, profitability, sales, simulation
+from streamlit_app.analytics import alerts, advisor, forecasting, inventory, products, profitability, sales, simulation
 from streamlit_app.components import design_system, import_dashboard, report, sidebar
 from streamlit_app.integrations import (
     DEFAULT_BENCHMARKS,
     IntegrationResult,
+    IntegrationSyncManager,
     available_providers,
     fetch_benchmark_indicators,
     fetch_datasets,
+    merge_results,
 )
 from streamlit_app.theme import inject_custom_css
 
 
 logger = logging.getLogger(__name__)
+
+
+LANGUAGE_PACKS = {
+    "ja": {
+        "tab_sales": "売上",
+        "tab_profit": "粗利",
+        "tab_inventory": "在庫",
+        "tab_cash": "資金",
+        "nav_dashboard": "ダッシュボード",
+        "nav_data": "データ管理",
+        "nav_settings": "ヘルプ／設定",
+        "multi_axis_header": "多軸分析",
+        "multi_axis_dimension": "分析軸",
+        "multi_axis_chart": "可視化タイプ",
+        "multi_axis_hint": "TreemapやSunburstをクリックすると階層をドリルダウンできます。",
+        "multi_axis_table": "階層サマリー",
+        "multi_axis_select_prompt": "分析軸を選択してください。",
+        "dimension_channel": "チャネル",
+        "dimension_store": "店舗",
+        "dimension_category": "カテゴリ",
+        "dimension_region": "地域",
+        "dimension_product": "商品",
+        "dimension_period": "期間",
+        "chart_treemap": "ツリーマップ",
+        "chart_sunburst": "サンバースト",
+        "forecast_header": "売上予測",
+        "forecast_periods": "予測期間",
+        "forecast_accuracy": "予測精度",
+        "forecast_warning": "十分な履歴データがないため予測モデルを初期化できませんでした。",
+        "forecast_accuracy_missing": "予測と比較する実績データが不足しています。",
+        "forecast_model_label": "使用モデル",
+        "label_actual_sales": "実績売上",
+        "label_forecast_sales": "予測売上",
+        "label_interval": "予測区間",
+        "label_mape": "平均MAPE",
+        "label_period": "期間",
+        "label_error": "誤差",
+        "alerts_header": "意思決定支援アラート",
+        "alerts_empty": "現在、重大なアラートは検出されていません。",
+    },
+    "en": {
+        "tab_sales": "Sales",
+        "tab_profit": "Gross Profit",
+        "tab_inventory": "Inventory",
+        "tab_cash": "Cash",
+        "nav_dashboard": "Dashboard",
+        "nav_data": "Data Hub",
+        "nav_settings": "Help / Settings",
+        "multi_axis_header": "Multi-axis Analysis",
+        "multi_axis_dimension": "Dimensions",
+        "multi_axis_chart": "Chart type",
+        "multi_axis_hint": "Click the treemap or sunburst segments to drill down through the hierarchy.",
+        "multi_axis_table": "Hierarchical summary",
+        "multi_axis_select_prompt": "Select one or more dimensions to analyse.",
+        "dimension_channel": "Channel",
+        "dimension_store": "Store",
+        "dimension_category": "Category",
+        "dimension_region": "Region",
+        "dimension_product": "Product",
+        "dimension_period": "Period",
+        "chart_treemap": "Treemap",
+        "chart_sunburst": "Sunburst",
+        "forecast_header": "Sales Forecast",
+        "forecast_periods": "Forecast horizon",
+        "forecast_accuracy": "Forecast accuracy",
+        "forecast_warning": "Not enough historical data was available to initialise the forecasting model.",
+        "forecast_accuracy_missing": "There is not enough realised data to evaluate the forecast.",
+        "forecast_model_label": "Model",
+        "label_actual_sales": "Actual sales",
+        "label_forecast_sales": "Forecast",
+        "label_interval": "Prediction interval",
+        "label_mape": "Average MAPE",
+        "label_period": "Period",
+        "label_error": "Error",
+        "alerts_header": "Decision Support Alerts",
+        "alerts_empty": "No critical alerts detected at the moment.",
+    },
+}
+
+
+def _current_language() -> str:
+    return st.session_state.get("ui_preferences", {}).get("language", "ja")
+
+
+def translate(key: str, fallback: str) -> str:
+    return LANGUAGE_PACKS.get(_current_language(), {}).get(key, fallback)
 
 
 def _set_state_and_rerun(key: str, value: object) -> None:
@@ -49,11 +137,28 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-inject_custom_css()
+if "ui_preferences" not in st.session_state:
+    st.session_state["ui_preferences"] = {
+        "language": "ja",
+        "theme": "light",
+        "palette": "default",
+    }
+
+_preferences = st.session_state["ui_preferences"]
+inject_custom_css(_preferences.get("theme", "light"), _preferences.get("palette", "default"))
 
 MAIN_TAB_KEY = "main_active_tab"
-MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]
-PAGE_OPTIONS = ["ダッシュボード", "データ管理", "ヘルプ／設定"]
+MAIN_TAB_LABELS = [
+    translate("tab_sales", "売上"),
+    translate("tab_profit", "粗利"),
+    translate("tab_inventory", "在庫"),
+    translate("tab_cash", "資金"),
+]
+PAGE_OPTIONS = [
+    translate("nav_dashboard", "ダッシュボード"),
+    translate("nav_data", "データ管理"),
+    translate("nav_settings", "ヘルプ／設定"),
+]
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -387,6 +492,14 @@ def _update_metadata_from_integration(result: Optional[IntegrationResult]) -> No
     st.session_state[DATASET_METADATA_KEY] = metadata
     st.session_state["last_data_update"] = timestamp
     st.session_state["current_source"] = "api"
+
+
+def _get_sync_manager() -> IntegrationSyncManager:
+    manager = st.session_state.get("_integration_sync_manager")
+    if not isinstance(manager, IntegrationSyncManager):
+        manager = IntegrationSyncManager()
+        st.session_state["_integration_sync_manager"] = manager
+    return manager
 def _handle_api_mode(
     api_state: Dict[str, object],
     baseline: Dict[str, pd.DataFrame],
@@ -394,8 +507,6 @@ def _handle_api_mode(
     provider = api_state.get("provider")
     stored = st.session_state.get("api_datasets")
     datasets = _copy_datasets(stored or baseline)
-    integration_result: Optional[IntegrationResult] = None
-
     if not provider:
         return datasets, st.session_state.get("latest_api_result")
 
@@ -404,49 +515,62 @@ def _handle_api_mode(
         for key, value in {
             "api_key": api_state.get("api_key"),
             "api_secret": api_state.get("api_secret"),
+            "base_url": api_state.get("base_url"),
         }.items()
         if value
     }
 
+    manager = _get_sync_manager()
+    credentials_map = {provider: credentials}
+
     if api_state.get("auto_daily"):
-        auto_result = _maybe_auto_fetch(provider, credentials)
-        if auto_result:
-            _log_integration_result(auto_result)
-            datasets = _copy_datasets(auto_result.datasets)
-            st.session_state["api_datasets"] = datasets
-            st.session_state["latest_api_result"] = auto_result
-            integration_result = auto_result
+        manager.enable_daily_batch(provider, run_time=time(hour=6, minute=0))
+    else:
+        manager.disable_batch(provider)
+
+    scheduled_results = manager.run_pending_batches(credentials=credentials_map)
+    webhook_results = manager.process_webhooks(credentials=credentials_map)
+
+    aggregated_results: List[IntegrationResult] = [
+        *scheduled_results,
+        *webhook_results,
+    ]
 
     if api_state.get("fetch_triggered"):
         start_date = api_state.get("start_date")
         end_date = api_state.get("end_date")
         if isinstance(start_date, date) and isinstance(end_date, date):
             manual_result = fetch_datasets(provider, start_date, end_date, credentials)
-            _log_integration_result(manual_result)
-            datasets = _copy_datasets(manual_result.datasets)
-            st.session_state["api_datasets"] = datasets
-            st.session_state["latest_api_result"] = manual_result
-            integration_result = manual_result
+            aggregated_results.append(manual_result)
 
-    if integration_result is None:
+    integration_result = merge_results(aggregated_results)
+
+    if integration_result is not None:
+        _log_integration_result(integration_result)
+        datasets = _copy_datasets(integration_result.datasets)
+        st.session_state["api_datasets"] = datasets
+        st.session_state["latest_api_result"] = integration_result
+    else:
         stored_result = st.session_state.get("latest_api_result")
         if stored_result is not None:
             datasets = _copy_datasets(st.session_state.get("api_datasets", datasets))
         integration_result = stored_result
 
+    rpa_url = api_state.get("rpa_url")
+    if isinstance(rpa_url, str) and rpa_url:
+        manager.register_rpa_job(f"rpa::{provider}", rpa_url, "sales")
+        if api_state.get("fetch_triggered") or aggregated_results:
+            rpa_frames = manager.run_rpa_jobs()
+            if rpa_frames:
+                for name, frame in rpa_frames.items():
+                    if not frame.empty:
+                        datasets[name] = frame.copy()
+                        if integration_result is not None:
+                            integration_result.datasets[name] = frame.copy()
+                            integration_result.message += " ／ RPA CSVを取り込みました"
+                st.session_state["api_datasets"] = datasets
+
     return datasets, integration_result
-
-
-def _maybe_auto_fetch(
-    provider: str, credentials: Dict[str, str]
-) -> Optional[IntegrationResult]:
-    target_date = date.today() - timedelta(days=1)
-    state_key = f"auto_fetch::{provider}"
-    if st.session_state.get(state_key) == str(target_date):
-        return None
-    result = fetch_datasets(provider, target_date, target_date, credentials)
-    st.session_state[state_key] = str(target_date)
-    return result
 
 
 def _log_integration_result(result: IntegrationResult) -> None:
@@ -992,7 +1116,7 @@ def _activate_inventory_focus(focus: str) -> None:
         st.session_state["inventory_tab_state"] = {}
     tab_state = st.session_state["inventory_tab_state"]
     tab_state["focus"] = focus
-    st.session_state[MAIN_TAB_KEY] = "在庫"
+    st.session_state[MAIN_TAB_KEY] = translate("tab_inventory", "在庫")
     trigger_rerun()
 
 
@@ -1195,7 +1319,7 @@ def _collect_alerts(
     fixed_costs_df = datasets.get("fixed_costs", pd.DataFrame())
 
     start_date, end_date = default_period
-    alerts: List[Dict[str, object]] = []
+    alert_items: List[Dict[str, object]] = []
 
     overview_df = inventory.inventory_overview(
         sales_df,
@@ -1207,7 +1331,7 @@ def _collect_alerts(
         stockouts = int((overview_df["stock_status"] == "在庫切れ").sum())
         excess = int((overview_df["stock_status"] == "在庫過多").sum())
         if stockouts > stockout_threshold:
-            alerts.append(
+            alert_items.append(
                 {
                     "title": "欠品アラート",
                     "count": stockouts,
@@ -1221,7 +1345,7 @@ def _collect_alerts(
                 }
             )
         if excess > excess_threshold:
-            alerts.append(
+            alert_items.append(
                 {
                     "title": "過剰在庫アラート",
                     "count": excess,
@@ -1244,7 +1368,7 @@ def _collect_alerts(
             (pnl_df.get("operating_profit", pd.Series(dtype=float)) < 0).sum()
         )
         if deficit_threshold is not None and operating_profit_total < float(deficit_threshold):
-            alerts.append(
+            alert_items.append(
                 {
                     "title": "損益警告",
                     "count": max(loss_stores, 1),
@@ -1261,7 +1385,7 @@ def _collect_alerts(
                 }
             )
         elif loss_stores > 0:
-            alerts.append(
+            alert_items.append(
                 {
                     "title": "赤字店舗あり",
                     "count": loss_stores,
@@ -1275,7 +1399,46 @@ def _collect_alerts(
                 }
             )
 
-    return alerts
+    cash_summary = _cash_flow_summary(sales_df, inventory_df)
+    monthly_sales = (
+        sales_df.set_index("date").resample("ME")["sales_amount"].sum()
+        if "date" in sales_df.columns and not sales_df.empty
+        else pd.Series(dtype=float)
+    )
+    next_period = (end_date + MonthEnd(1)).strftime("%Y-%m")
+    projected_balance = float(cash_summary.get("balance", BASE_CASH_BUFFER))
+    if len(monthly_sales) >= 2:
+        recent_growth = float(monthly_sales.diff().iloc[-1])
+        projected_balance += recent_growth * 0.05
+    cash_forecast_df = pd.DataFrame(
+        {
+            "period_label": [f"{end_date:%Y-%m}", next_period],
+            "balance": [cash_summary.get("balance", BASE_CASH_BUFFER), projected_balance],
+        }
+    )
+
+    decision_alerts = alerts.collect_alerts(
+        inventory_df=overview_df,
+        cash_forecast_df=cash_forecast_df,
+        sales_df=sales_df,
+        fixed_cost_df=fixed_costs_df,
+        cash_target=float(sales_df["sales_amount"].sum()) * TARGET_CASH_RATIO
+        if not sales_df.empty
+        else None,
+    )
+    severity_map = {"danger": "high", "warning": "medium", "success": "low", "info": "low"}
+    for decision in decision_alerts:
+        alert_items.append(
+            {
+                "title": decision.title,
+                "count": max(1, len(decision.recommendations) or 1),
+                "message": decision.message,
+                "recommendations": decision.recommendations,
+                "severity": severity_map.get(decision.severity, "medium"),
+            }
+        )
+
+    return alert_items
 
 
 def render_alert_center(
@@ -1331,6 +1494,14 @@ def render_alert_center(
                         "</div>",
                         unsafe_allow_html=True,
                     )
+                    recommendations = alert.get("recommendations") or []
+                    if recommendations:
+                        st.markdown(
+                            "<ul>" + "".join(
+                                f"<li>{escape(str(item))}</li>" for item in recommendations
+                            ) + "</ul>",
+                            unsafe_allow_html=True,
+                        )
                     action = alert.get("action") or {}
                     callback = action.get("callback")
                     if callback:
@@ -1378,6 +1549,14 @@ def render_alert_center(
                 "</div>",
                 unsafe_allow_html=True,
             )
+            recommendations = alert.get("recommendations") or []
+            if recommendations:
+                column.markdown(
+                    "<ul style='padding-left:1.2rem;'>" + "".join(
+                        f"<li>{escape(str(item))}</li>" for item in recommendations
+                    ) + "</ul>",
+                    unsafe_allow_html=True,
+                )
             action = alert.get("action") or {}
             callback = action.get("callback")
             if callback:
@@ -2123,6 +2302,192 @@ def render_sales_tab(
         logger.exception("Failed to render sales trend chart")
         st.error(f"売上チャートの描画に失敗しました: {exc}")
         return
+
+    st.markdown(f"#### {translate('multi_axis_header', '多軸分析')}")
+    dimension_catalog = [
+        ("channel", translate("dimension_channel", "チャネル")),
+        ("store", translate("dimension_store", "店舗")),
+        ("category", translate("dimension_category", "カテゴリ")),
+        ("region", translate("dimension_region", "地域")),
+        ("product", translate("dimension_product", "商品")),
+        ("period", translate("dimension_period", "期間")),
+    ]
+    multi_source = filtered_sales.copy()
+    if "date" in multi_source.columns:
+        multi_source["period"] = multi_source["date"].dt.to_period("M").astype(str)
+    dimension_options = {label: column for column, label in dimension_catalog}
+    label_lookup = {column: label for column, label in dimension_catalog}
+    default_dims = [
+        column
+        for column in ["channel", "store", "category"]
+        if column in multi_source.columns or column == "period"
+    ]
+    default_labels = [label_lookup[column] for column in default_dims if column in label_lookup]
+    selected_labels = st.multiselect(
+        translate("multi_axis_dimension", "分析軸"),
+        list(dimension_options.keys()),
+        default=default_labels,
+    )
+    selected_dimensions = [dimension_options[label] for label in selected_labels]
+
+    chart_mode_label = st.radio(
+        translate("multi_axis_chart", "可視化タイプ"),
+        [translate("chart_treemap", "ツリーマップ"), translate("chart_sunburst", "サンバースト")],
+        horizontal=True,
+    )
+    chart_mode = "treemap" if chart_mode_label == translate("chart_treemap", "ツリーマップ") else "sunburst"
+
+    if selected_dimensions:
+        cube = sales.hierarchical_cube(multi_source, selected_dimensions)
+        if cube.empty:
+            st.info(translate("multi_axis_select_prompt", "分析軸を選択してください。"))
+        else:
+            path = [px.Constant(translate("multi_axis_header", "多軸分析"))] + selected_dimensions
+            hover_config = {
+                "sales_amount": ":,.0f",
+                "gross_profit": ":,.0f",
+                "share": ".1%",
+                "gross_margin": ".1%",
+            }
+            color_range = None
+            if "gross_margin" in cube.columns and not cube["gross_margin"].isna().all():
+                color_range = [0, min(1.0, float(cube["gross_margin"].max()))]
+            if chart_mode == "treemap":
+                figure = px.treemap(
+                    cube,
+                    path=path,
+                    values="sales_amount",
+                    color="gross_margin" if "gross_margin" in cube.columns else "sales_amount",
+                    color_continuous_scale="Blues",
+                    hover_data=hover_config,
+                )
+            else:
+                figure = px.sunburst(
+                    cube,
+                    path=path,
+                    values="sales_amount",
+                    color="gross_margin" if "gross_margin" in cube.columns else "sales_amount",
+                    color_continuous_scale="Blues",
+                    hover_data=hover_config,
+                )
+            if color_range:
+                figure.update_coloraxes(cmin=color_range[0], cmax=color_range[1])
+            figure.update_layout(margin=dict(t=40, l=0, r=0, b=0))
+            st.plotly_chart(figure, use_container_width=True)
+            st.caption(translate("multi_axis_hint", "TreemapやSunburstをクリックすると階層をドリルダウンできます。"))
+            summary_table = sales.hierarchical_table(cube, selected_dimensions)
+            st.subheader(translate("multi_axis_table", "階層サマリー"))
+            st.dataframe(summary_table, use_container_width=True)
+    else:
+        st.info(translate("multi_axis_select_prompt", "分析軸を選択してください。"))
+
+    st.markdown(f"#### {translate('forecast_header', '売上予測')}")
+    forecast_controls = st.columns([2, 1])
+    horizon = forecast_controls[0].slider(
+        translate("forecast_periods", "予測期間"),
+        min_value=3,
+        max_value=12,
+        value=6,
+        step=1,
+    )
+    forecast_result = forecasting.forecast_sales(
+        filtered_sales,
+        periods=int(horizon),
+        frequency=view_filters.period_granularity,
+    )
+    forecast_fig = go.Figure()
+    history_df = forecast_result.history.copy()
+    forecast_df = forecast_result.forecast.copy()
+    if history_df.empty or forecast_df.empty:
+        st.warning(translate("forecast_warning", "十分な履歴データがないため予測モデルを初期化できませんでした。"))
+    else:
+        history_df["date"] = pd.to_datetime(history_df["date"], errors="coerce")
+        forecast_df["date"] = pd.to_datetime(forecast_df["date"], errors="coerce")
+        forecast_fig.add_trace(
+            go.Scatter(
+                x=history_df["date"],
+                y=history_df["actual"],
+                mode="lines+markers",
+                name=translate("label_actual_sales", "実績売上"),
+                line=dict(color=colors["primary"], width=3),
+            )
+        )
+        forecast_fig.add_trace(
+            go.Scatter(
+                x=forecast_df["date"],
+                y=forecast_df["forecast"],
+                mode="lines+markers",
+                name=translate("label_forecast_sales", "予測売上"),
+                line=dict(color=colors["accent"], dash="dash"),
+            )
+        )
+        if {"forecast_lower", "forecast_upper"}.issubset(forecast_df.columns):
+            interval_x = list(forecast_df["date"]) + list(forecast_df["date"][::-1])
+            interval_y = (
+                list(forecast_df["forecast_upper"].astype(float))
+                + list(forecast_df["forecast_lower"].astype(float)[::-1])
+            )
+            forecast_fig.add_trace(
+                go.Scatter(
+                    x=interval_x,
+                    y=interval_y,
+                    fill="toself",
+                    fillcolor="rgba(30, 136, 229, 0.15)",
+                    line=dict(color="rgba(30, 136, 229, 0.0)"),
+                    hoverinfo="skip",
+                    name=translate("label_interval", "予測区間"),
+                    showlegend=True,
+                )
+            )
+        forecast_fig.update_layout(
+            xaxis=dict(title="date"),
+            yaxis=dict(title="売上金額", tickformat=",.0f"),
+            hovermode="x unified",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        )
+        st.plotly_chart(forecast_fig, use_container_width=True)
+        forecast_controls[1].metric(
+            translate("forecast_model_label", "使用モデル"),
+            forecast_result.model_name,
+        )
+
+        accuracy_df = forecasting.evaluate_accuracy(
+            forecast_result,
+            filtered_sales,
+            value_column="sales_amount",
+            date_column="date",
+            frequency=view_filters.period_granularity,
+        )
+        if accuracy_df.empty:
+            st.caption(translate("forecast_accuracy_missing", "予測と比較する実績データが不足しています。"))
+        else:
+            accuracy_df = accuracy_df.copy()
+            accuracy_df["forecast"] = accuracy_df["forecast"].astype(float)
+            accuracy_df["actual"] = accuracy_df["actual"].astype(float)
+            accuracy_df["abs_error"] = accuracy_df["abs_error"].astype(float)
+            accuracy_df["ape_pct"] = (accuracy_df["ape"] * 100).fillna(0.0)
+            display_df = accuracy_df[["date", "forecast", "actual", "abs_error", "ape_pct"]].rename(
+                columns={
+                    "date": translate("label_period", "期間"),
+                    "forecast": translate("label_forecast_sales", "予測売上"),
+                    "actual": translate("label_actual_sales", "実績売上"),
+                    "abs_error": translate("label_error", "誤差"),
+                    "ape_pct": "APE (%)",
+                }
+            )
+            error_label = translate("label_error", "誤差")
+            display_df[error_label] = display_df[error_label].map(lambda v: f"{v:,.0f}")
+            display_df[translate("label_forecast_sales", "予測売上")] = display_df[
+                translate("label_forecast_sales", "予測売上")
+            ].map(lambda v: f"{v:,.0f}")
+            display_df[translate("label_actual_sales", "実績売上")] = display_df[
+                translate("label_actual_sales", "実績売上")
+            ].map(lambda v: f"{v:,.0f}")
+            display_df["APE (%)"] = display_df["APE (%)"].map(lambda v: f"{v:.1f}%")
+            st.subheader(translate("forecast_accuracy", "予測精度"))
+            st.dataframe(display_df, use_container_width=True)
+            mean_mape = float(accuracy_df["ape"].mean()) if not accuracy_df.empty else 0.0
+            st.metric(translate("label_mape", "平均MAPE"), f"{mean_mape*100:.1f}%")
 
     detail_expander = st.expander("売上明細と出力", expanded=False)
     with detail_expander:
@@ -5045,7 +5410,7 @@ def main() -> None:
     )
     st.session_state["active_page"] = page_choice
 
-    if page_choice == "ダッシュボード":
+    if page_choice == translate("nav_dashboard", "ダッシュボード"):
         active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
         if active_tab not in MAIN_TAB_LABELS:
             active_tab = MAIN_TAB_LABELS[0]
@@ -5087,7 +5452,7 @@ def main() -> None:
         active_tab = _render_analysis_navigation(active_tab)
         st.session_state[MAIN_TAB_KEY] = active_tab
 
-        if active_tab == "売上":
+        if active_tab == translate("tab_sales", "売上"):
             render_sales_tab(
                 datasets["sales"],
                 global_filters,
@@ -5099,7 +5464,7 @@ def main() -> None:
                 filtered_sales, dashboard_comparison, global_filters
             )
             st.session_state["latest_abc_df"] = abc_df
-        elif active_tab == "粗利":
+        elif active_tab == translate("tab_profit", "粗利"):
             pnl_view = render_profitability_tab(
                 filtered_sales,
                 dashboard_comparison,
@@ -5107,7 +5472,7 @@ def main() -> None:
                 global_filters,
             )
             st.session_state["latest_pnl_df"] = pnl_view
-        elif active_tab == "在庫":
+        elif active_tab == translate("tab_inventory", "在庫"):
             abc_df_cached = st.session_state.get("latest_abc_df")
             if abc_df_cached is None:
                 abc_df_cached = products.abc_analysis(
@@ -5120,7 +5485,7 @@ def main() -> None:
                 abc_df_cached,
                 global_filters,
             )
-        elif active_tab == "資金":
+        elif active_tab == translate("tab_cash", "資金"):
             pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
             render_cash_tab(
                 filtered_sales,
@@ -5129,7 +5494,7 @@ def main() -> None:
                 pnl_for_cash,
                 global_filters,
             )
-    elif page_choice == "データ管理":
+    elif page_choice == translate("nav_data", "データ管理"):
         integration_display = integration_result or st.session_state.get(
             "latest_api_result"
         )

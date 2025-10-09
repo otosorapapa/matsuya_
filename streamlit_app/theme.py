@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 from textwrap import dedent
+from typing import Dict, Optional
 
 import streamlit as st
 
 
-DESIGN_TOKENS = {
+BASE_TOKENS = {
     "primaryColor": "#0B1F3B",
     "secondaryColor": "#5A6B7A",
     "accentColor": "#1E88E5",
@@ -33,44 +34,83 @@ DESIGN_TOKENS = {
     "shadowLifted": "0 12px 30px rgba(15, 23, 42, 0.16)",
 }
 
+DARK_OVERRIDES = {
+    "backgroundColor": "#111827",
+    "cardBackground": "#1F2937",
+    "surfaceMuted": "#374151",
+    "primaryColor": "#C7D2FE",
+    "secondaryColor": "#9CA3AF",
+    "accentColor": "#60A5FA",
+    "shadowSoft": "0 2px 6px rgba(0, 0, 0, 0.3)",
+    "shadowLifted": "0 12px 30px rgba(0, 0, 0, 0.45)",
+}
 
-def get_design_tokens() -> Dict[str, str]:
-    """Return a copy of the global design token dictionary."""
+COLORBLIND_OVERRIDES = {
+    "accentColor": "#0072B2",
+    "successColor": "#009E73",
+    "warningColor": "#F0E442",
+    "errorColor": "#D55E00",
+    "infoColor": "#56B4E9",
+}
 
-    return dict(DESIGN_TOKENS)
+DESIGN_TOKENS = dict(BASE_TOKENS)
 
 
-def build_custom_css() -> str:
+def resolve_design_tokens(mode: str = "light", palette: str = "default") -> Dict[str, str]:
+    tokens = dict(BASE_TOKENS)
+    if mode == "dark":
+        tokens.update(DARK_OVERRIDES)
+    if palette == "colorblind":
+        tokens.update(COLORBLIND_OVERRIDES)
+    return tokens
+
+
+def get_design_tokens(
+    mode: Optional[str] = None,
+    palette: Optional[str] = None,
+) -> Dict[str, str]:
+    """Return design tokens taking into account user preferences."""
+
+    preferences = st.session_state.get("ui_preferences", {})
+    resolved_mode = mode or preferences.get("theme", "light")
+    resolved_palette = palette or preferences.get("palette", "default")
+    tokens = resolve_design_tokens(resolved_mode, resolved_palette)
+    st.session_state["_current_theme_tokens"] = tokens
+    return tokens
+
+
+def build_custom_css(mode: str = "light", palette: str = "default") -> str:
     """Return the CSS snippet that applies the shared design tokens."""
 
+    tokens = resolve_design_tokens(mode, palette)
     return dedent(
         f"""
         <style>
         :root {{
-            --color-primary: {DESIGN_TOKENS['primaryColor']};
-            --color-secondary: {DESIGN_TOKENS['secondaryColor']};
-            --color-accent: {DESIGN_TOKENS['accentColor']};
-            --color-background: {DESIGN_TOKENS['backgroundColor']};
-            --color-surface: {DESIGN_TOKENS['cardBackground']};
-            --color-surface-muted: {DESIGN_TOKENS['surfaceMuted']};
-            --color-success: {DESIGN_TOKENS['successColor']};
-            --color-warning: {DESIGN_TOKENS['warningColor']};
-            --color-error: {DESIGN_TOKENS['errorColor']};
-            --color-info: {DESIGN_TOKENS['infoColor']};
-            --font-base: {DESIGN_TOKENS['fontFamilyBase']};
-            --font-numeric: {DESIGN_TOKENS['fontFamilyNumeric']};
-            --heading-1: {DESIGN_TOKENS['heading1Size']};
-            --heading-2: {DESIGN_TOKENS['heading2Size']};
-            --heading-3: {DESIGN_TOKENS['heading3Size']};
-            --text-body: {DESIGN_TOKENS['bodySize']};
-            --text-small: {DESIGN_TOKENS['smallTextSize']};
-            --text-micro: {DESIGN_TOKENS['microTextSize']};
-            --spacing-unit: {DESIGN_TOKENS['spacingUnit']};
-            --radius-sm: {DESIGN_TOKENS['radiusSm']};
-            --radius-md: {DESIGN_TOKENS['radiusMd']};
-            --radius-lg: {DESIGN_TOKENS['radiusLg']};
-            --shadow-soft: {DESIGN_TOKENS['shadowSoft']};
-            --shadow-lifted: {DESIGN_TOKENS['shadowLifted']};
+            --color-primary: {tokens['primaryColor']};
+            --color-secondary: {tokens['secondaryColor']};
+            --color-accent: {tokens['accentColor']};
+            --color-background: {tokens['backgroundColor']};
+            --color-surface: {tokens['cardBackground']};
+            --color-surface-muted: {tokens['surfaceMuted']};
+            --color-success: {tokens['successColor']};
+            --color-warning: {tokens['warningColor']};
+            --color-error: {tokens['errorColor']};
+            --color-info: {tokens['infoColor']};
+            --font-base: {tokens['fontFamilyBase']};
+            --font-numeric: {tokens['fontFamilyNumeric']};
+            --heading-1: {tokens['heading1Size']};
+            --heading-2: {tokens['heading2Size']};
+            --heading-3: {tokens['heading3Size']};
+            --text-body: {tokens['bodySize']};
+            --text-small: {tokens['smallTextSize']};
+            --text-micro: {tokens['microTextSize']};
+            --spacing-unit: {tokens['spacingUnit']};
+            --radius-sm: {tokens['radiusSm']};
+            --radius-md: {tokens['radiusMd']};
+            --radius-lg: {tokens['radiusLg']};
+            --shadow-soft: {tokens['shadowSoft']};
+            --shadow-lifted: {tokens['shadowLifted']};
         }}
 
         html, body, .stApp {{
@@ -326,18 +366,21 @@ def build_custom_css() -> str:
     ).strip()
 
 
-def inject_custom_css() -> None:
-    """Inject the custom CSS into the Streamlit app if it has not been added yet."""
+def inject_custom_css(mode: str = "light", palette: str = "default") -> None:
+    """Inject the custom CSS into the Streamlit app respecting the current theme."""
 
-    if st.session_state.get("_theme_css_injected"):
+    key = f"{mode}:{palette}"
+    cached_key = st.session_state.get("_theme_css_key")
+    if cached_key == key:
         return
-
-    st.markdown(build_custom_css(), unsafe_allow_html=True)
+    st.markdown(build_custom_css(mode, palette), unsafe_allow_html=True)
+    st.session_state["_theme_css_key"] = key
     st.session_state["_theme_css_injected"] = True
 
 
 __all__ = [
     "DESIGN_TOKENS",
+    "resolve_design_tokens",
     "get_design_tokens",
     "build_custom_css",
     "inject_custom_css",

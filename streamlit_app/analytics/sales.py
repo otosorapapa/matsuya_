@@ -345,3 +345,79 @@ def breakdown_summary(
     merged["margin_delta"] = merged["gross_margin"] - merged["comparison_margin"]
     merged.loc[merged["comparison_margin"].isna(), "margin_delta"] = pd.NA
     return merged.sort_values("sales_amount", ascending=False)
+
+
+def hierarchical_cube(
+    df: pd.DataFrame,
+    dimensions: Sequence[str],
+    *,
+    value_column: str = "sales_amount",
+    include_profit: bool = True,
+) -> pd.DataFrame:
+    """Aggregate sales across multiple dimensions for OLAP-style navigation."""
+
+    valid_dims = [dim for dim in dimensions if dim in df.columns]
+    if not valid_dims:
+        columns = list(dimensions) + [value_column]
+        if include_profit:
+            columns.extend(["gross_profit", "gross_margin"])
+        return pd.DataFrame(columns=columns)
+
+    working = df.copy()
+    for dim in valid_dims:
+        working[dim] = working[dim].fillna("未分類")
+
+    group_cols = list(dict.fromkeys(valid_dims))
+    metrics = [value_column]
+    if include_profit and "gross_profit" in working.columns:
+        metrics.append("gross_profit")
+
+    aggregated = (
+        working.groupby(group_cols)[metrics]
+        .sum(min_count=1)
+        .reset_index()
+        .sort_values(value_column, ascending=False)
+    )
+    if include_profit and "gross_profit" in aggregated.columns:
+        aggregated["gross_margin"] = (
+            aggregated["gross_profit"] / aggregated[value_column].replace(0, pd.NA)
+        ).fillna(0.0)
+
+    aggregated["path"] = aggregated.apply(
+        lambda row: [str(row[dim]) or "未分類" for dim in group_cols], axis=1
+    )
+    aggregated["path_str"] = aggregated["path"].apply(lambda parts: " / ".join(parts))
+    total = float(aggregated[value_column].sum()) if not aggregated.empty else 0.0
+    if total:
+        aggregated["share"] = aggregated[value_column] / total
+    else:
+        aggregated["share"] = 0.0
+    return aggregated
+
+
+def hierarchical_table(
+    cube: pd.DataFrame,
+    dimensions: Sequence[str],
+    *,
+    value_column: str = "sales_amount",
+) -> pd.DataFrame:
+    if cube.empty:
+        columns = list(dimensions) + [value_column, "gross_profit", "gross_margin", "share"]
+        return pd.DataFrame(columns=columns)
+
+    columns = list(dimensions)
+    rename_map = {
+        value_column: "売上",
+        "gross_profit": "粗利",
+        "gross_margin": "粗利率",
+        "share": "構成比",
+    }
+    table = cube.copy()
+    for dim in columns:
+        if dim not in table.columns:
+            table[dim] = "-"
+    table = table[columns + [value_column, "gross_profit", "gross_margin", "share"]]
+    table = table.rename(columns=rename_map)
+    table["構成比"] = table["構成比"].map(lambda v: f"{float(v)*100:.1f}%" if pd.notna(v) else "-")
+    table["粗利率"] = table["粗利率"].map(lambda v: f"{float(v)*100:.1f}%" if pd.notna(v) else "-")
+    return table

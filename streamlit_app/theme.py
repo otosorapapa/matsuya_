@@ -321,6 +321,240 @@ def build_custom_css() -> str:
             font-size: var(--text-small);
             color: var(--color-secondary);
         }}
+
+        .kpi-card-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+            gap: calc(var(--spacing-unit) * 1.5);
+            margin-bottom: calc(var(--spacing-unit) * 1.5);
+        }}
+
+        .kpi-card {{
+            background: linear-gradient(135deg, rgba(30, 136, 229, 0.08), #fff);
+            border-radius: var(--radius-md);
+            padding: calc(var(--spacing-unit) * 1.5);
+            border: 1px solid rgba(11, 31, 59, 0.08);
+            box-shadow: var(--shadow-soft);
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 0.75);
+            position: relative;
+        }}
+
+        .kpi-card.alert {{
+            border-color: var(--color-error);
+            box-shadow: 0 12px 28px rgba(229, 83, 83, 0.25);
+        }}
+
+        .kpi-card.caution {{
+            border-color: var(--color-warning);
+        }}
+
+        .kpi-card__header {{
+            display: flex;
+            align-items: center;
+            gap: calc(var(--spacing-unit) * 0.5);
+            font-size: var(--text-small);
+            color: var(--color-secondary);
+            text-transform: none;
+        }}
+
+        .kpi-card__chip {{
+            background-color: rgba(37, 99, 235, 0.12);
+            color: var(--color-info);
+            padding: 0 10px;
+            border-radius: 999px;
+            font-size: var(--text-micro);
+            font-weight: 600;
+        }}
+
+        .kpi-card__info {{
+            margin-left: auto;
+            font-size: 0.85rem;
+            color: rgba(11, 31, 59, 0.55);
+        }}
+
+        .kpi-card .value {{
+            font-size: 2rem;
+            font-weight: 600;
+            font-family: var(--font-numeric);
+            color: var(--color-primary);
+        }}
+
+        .kpi-card .sub-value {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.75);
+        }}
+
+        .kpi-card .sub-value.muted {{
+            color: rgba(11, 31, 59, 0.45);
+        }}
+
+        .kpi-card .delta {{
+            font-size: 0.95rem;
+            font-weight: 600;
+        }}
+
+        .kpi-card .delta.positive {{
+            color: var(--color-success);
+        }}
+
+        .kpi-card .delta.negative {{
+            color: var(--color-error);
+        }}
+
+        .kpi-card .target {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.7);
+        }}
+
+        .kpi-card .target.positive {{
+            color: var(--color-success);
+        }}
+
+        .kpi-card .target.negative {{
+            color: var(--color-error);
+        }}
+
+        .kpi-card__link {{
+            display: inline-block;
+            margin-top: calc(var(--spacing-unit));
+            font-weight: 600;
+        }}
+
+        .kpi-highlight-wrapper {{
+            border-radius: var(--radius-lg);
+            padding: calc(var(--spacing-unit) * 2);
+            background: linear-gradient(135deg, rgba(63, 178, 126, 0.15), rgba(255, 255, 255, 0.95));
+            border: 1px solid rgba(63, 178, 126, 0.35);
+            margin-bottom: calc(var(--spacing-unit) * 2);
+        }}
+
+        .kpi-highlight-wrapper > header {{
+            font-weight: 600;
+            color: var(--color-primary);
+            margin-bottom: calc(var(--spacing-unit) * 1.2);
+        }}
+
+        .kpi-highlight-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: calc(var(--spacing-unit) * 1.2);
+        }}
+
+        .kpi-highlight {{
+            background-color: rgba(255, 255, 255, 0.92);
+            border-radius: var(--radius-md);
+            padding: calc(var(--spacing-unit) * 1.5);
+            border: 1px solid rgba(63, 178, 126, 0.25);
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 0.6);
+        }}
+
+        .kpi-highlight__meta {{
+            display: flex;
+            align-items: center;
+            gap: calc(var(--spacing-unit) * 0.5);
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.7);
+        }}
+
+        .kpi-highlight__chip {{
+            background-color: rgba(63, 178, 126, 0.14);
+            color: var(--color-success);
+            padding: 0 10px;
+            border-radius: 999px;
+            font-size: var(--text-micro);
+            font-weight: 600;
+        }}
+
+        .kpi-highlight .value {{
+            font-size: 1.8rem;
+            font-weight: 600;
+            color: var(--color-primary);
+        }}
+
+        .kpi-highlight__target {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.65);
+        }}
+
+        .kpi-glossary {{
+            margin-top: calc(var(--spacing-unit) * 1.5);
+        }}
+
+        .kpi-glossary h5 {{
+            margin-bottom: calc(var(--spacing-unit));
+            color: var(--color-primary);
+        }}
+
+        .kpi-glossary ul {{
+            margin-top: 0;
+            margin-bottom: calc(var(--spacing-unit) * 1.5);
+            padding-left: calc(var(--spacing-unit) * 2);
+        }}
+
+        .sidebar-anchor-nav {{
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit));
+            margin-bottom: calc(var(--spacing-unit) * 2);
+        }}
+
+        .sidebar-anchor-nav a {{
+            padding: calc(var(--spacing-unit) * 0.75) calc(var(--spacing-unit));
+            border-radius: var(--radius-sm);
+            background-color: rgba(11, 31, 59, 0.05);
+            color: var(--color-primary);
+            font-weight: 600;
+        }}
+
+        .sidebar-anchor-nav a:hover {{
+            background-color: rgba(30, 136, 229, 0.15);
+        }}
+
+        .alert-card.high {{
+            border-left: 6px solid var(--color-error);
+        }}
+
+        .alert-card.medium {{
+            border-left: 6px solid var(--color-warning);
+        }}
+
+        .alert-card.low {{
+            border-left: 6px solid var(--color-success);
+        }}
+
+        .alert-card {{
+            background-color: var(--color-surface);
+            border-radius: var(--radius-md);
+            padding: calc(var(--spacing-unit) * 1.2);
+            box-shadow: var(--shadow-soft);
+            border: 1px solid rgba(11, 31, 59, 0.08);
+            display: flex;
+            flex-direction: column;
+            gap: calc(var(--spacing-unit) * 0.5);
+        }}
+
+        .alert-card__title {{
+            font-weight: 600;
+            color: var(--color-primary);
+        }}
+
+        .alert-card__message {{
+            color: rgba(11, 31, 59, 0.75);
+        }}
+
+        .alert-card__cause {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.7);
+        }}
+
+        .alert-card__actions {{
+            font-size: var(--text-small);
+            color: rgba(11, 31, 59, 0.65);
+        }}
         </style>
         """
     ).strip()

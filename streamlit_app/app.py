@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import logging
 import sys
 from datetime import date, datetime, timedelta
@@ -22,7 +23,13 @@ if str(ROOT_DIR) not in sys.path:
 
 from streamlit_app import data_loader, rerun as trigger_rerun, transformers
 from streamlit_app.analytics import advisor, inventory, products, profitability, sales, simulation
-from streamlit_app.components import design_system, import_dashboard, report, sidebar
+from streamlit_app.components import (
+    design_system,
+    import_dashboard,
+    kpi_cards,
+    report,
+    sidebar,
+)
 from streamlit_app.integrations import (
     DEFAULT_BENCHMARKS,
     IntegrationResult,
@@ -53,7 +60,6 @@ inject_custom_css()
 
 MAIN_TAB_KEY = "main_active_tab"
 MAIN_TAB_LABELS = ["売上", "粗利", "在庫", "資金"]
-PAGE_OPTIONS = ["ダッシュボード", "データ管理", "ヘルプ／設定"]
 @st.cache_data(show_spinner=False)
 def load_datasets(
     sales_source,
@@ -473,6 +479,187 @@ TARGET_SALES_GROWTH = 0.05
 TARGET_CASH_RATIO = 0.25
 BASE_CASH_BUFFER = 3_000_000.0
 KPI_ALERT_THRESHOLD = -0.05
+
+BSC_CATEGORY_LABELS = {
+    "finance": "財務",
+    "customer": "顧客",
+    "process": "内部プロセス",
+    "learning": "学習・成長",
+}
+
+KPI_METADATA: Dict[str, Dict[str, str]] = {
+    "期間売上": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "選択期間の売上金額合計。",  # noqa: E501
+        "formula": "売上金額の合計",  # noqa: E501
+        "target": "前年同期間比 +5%",
+    },
+    "営業利益": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "粗利から固定費を差し引いた経営成果。",
+        "formula": "営業利益 = 粗利 − 固定費",
+        "target": "前年同期間比 +5%",
+    },
+    "欠品品目数": {
+        "category": BSC_CATEGORY_LABELS["process"],
+        "definition": "安全在庫を下回っているSKU数。",
+        "formula": "安全在庫割れ商品の件数",
+        "target": "閾値未満（管理画面設定値）",
+    },
+    "資金残高": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "預金・売掛金・支払予定を含む運転資金残高。",
+        "formula": "預金 + 売掛金 − 支払予定",
+        "target": "売上高の15%以上",
+    },
+    "売上高成長率": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "売上が前年同期間比でどれだけ伸びたか。",
+        "formula": "(当期売上 − 前期売上) ÷ 前期売上",
+        "target": "+5% 以上",
+    },
+    "営業利益率": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "売上に対する営業利益の割合。",
+        "formula": "営業利益 ÷ 売上高",
+        "target": "15% 以上",
+    },
+    "キャッシュ比率": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "売上に対して現金・資金がどれだけ確保できているか。",
+        "formula": "資金残高 ÷ 期間売上",
+        "target": "15% 以上",
+    },
+    "月次売上": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "月間売上金額の合計。",
+        "formula": "対象月の売上金額合計",
+        "target": "前年同月比 +5%",
+    },
+    "来客数": {
+        "category": BSC_CATEGORY_LABELS["customer"],
+        "definition": "期間中に来店した顧客数。",
+        "formula": "来客数の合計",
+        "target": "前年同期間比 +3%",
+    },
+    "客単価": {
+        "category": BSC_CATEGORY_LABELS["customer"],
+        "definition": "顧客一人あたりの平均購買額。",
+        "formula": "売上金額 ÷ 来客数",
+        "target": "前年同期間比 +2%",
+    },
+    "粗利": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "売上総利益（売上 − 原価）。",
+        "formula": "売上 − 売上原価",
+        "target": "売上×目標粗利率以上",
+    },
+    "粗利率": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "売上総利益の割合。",
+        "formula": "粗利 ÷ 売上",
+        "target": "30% 以上",
+    },
+    "トップ5売上": {
+        "category": BSC_CATEGORY_LABELS["customer"],
+        "definition": "売上上位5商品の売上合計。",
+        "formula": "上位5商品の売上金額合計",
+        "target": "総売上の60%以上",
+    },
+    "トップ5構成比": {
+        "category": BSC_CATEGORY_LABELS["customer"],
+        "definition": "上位5商品が売上に占める割合。",
+        "formula": "上位5売上 ÷ 総売上",
+        "target": "60% 以上",
+    },
+    "過剰在庫数": {
+        "category": BSC_CATEGORY_LABELS["process"],
+        "definition": "安全在庫を大きく上回るSKU数。",
+        "formula": "在庫過多と判定された品目数",
+        "target": "閾値未満（管理画面設定値）",
+    },
+    "安全在庫欠品数": {
+        "category": BSC_CATEGORY_LABELS["process"],
+        "definition": "安全在庫を割り込んでいるSKU数。",
+        "formula": "安全在庫割れの品目数",
+        "target": "閾値未満（管理画面設定値）",
+    },
+    "平均在庫回転率": {
+        "category": BSC_CATEGORY_LABELS["process"],
+        "definition": "在庫が一定期間で何回入れ替わったか。",
+        "formula": "期間売上原価 ÷ 平均在庫残高",
+        "target": "年間8回以上",
+    },
+    "入金予定": {
+        "category": BSC_CATEGORY_LABELS["finance"],
+        "definition": "未回収の売掛金見込み。",
+        "formula": "売掛金残高",
+        "target": "売上金額の20%以内",
+    },
+    "支払予定": {
+        "category": BSC_CATEGORY_LABELS["process"],
+        "definition": "仕入や発注による支払予定額。",
+        "formula": "発注予定数量 × 仕入単価",
+        "target": "キャッシュ残高の範囲内",
+    },
+}
+
+
+def _kpi_meta(label: str) -> Dict[str, str]:
+    return KPI_METADATA.get(label, {})
+
+
+def _kpi_card_kwargs(label: str) -> Dict[str, Optional[str]]:
+    meta = _kpi_meta(label)
+    return {
+        "category": meta.get("category"),
+        "definition": meta.get("definition"),
+        "formula": meta.get("formula"),
+        "target_setting": meta.get("target"),
+    }
+
+
+def _filter_summary(filters: transformers.FilterState) -> str:
+    store_label = "、".join(filters.stores) if filters.stores else transformers.ALL_STORES
+    category_label = (
+        "、".join(filters.categories)
+        if filters.categories
+        else transformers.ALL_CATEGORIES
+    )
+    channel_label = (
+        "、".join(filters.channels)
+        if filters.channels
+        else transformers.ALL_CHANNELS
+    )
+    return (
+        f"期間: {filters.start_date:%Y-%m-%d} 〜 {filters.end_date:%Y-%m-%d} ／ "
+        f"店舗: {store_label} ／ カテゴリ: {category_label} ／ チャネル: {channel_label}"
+    )
+
+
+def _render_section_header(anchor: str, title: str, filters: Optional[transformers.FilterState] = None) -> None:
+    st.markdown(f"<div id='{anchor}'></div>", unsafe_allow_html=True)
+    st.subheader(title)
+    if filters:
+        st.caption(f"現在のフィルター: {_filter_summary(filters)}")
+
+
+def _render_sidebar_navigation() -> None:
+    st.sidebar.markdown(
+        """
+        <nav class="sidebar-anchor-nav">
+            <a href="#analysis-overview">分析ダッシュボード</a>
+            <a href="#analysis-sales">売上分析</a>
+            <a href="#analysis-profit">粗利・利益管理</a>
+            <a href="#analysis-inventory">在庫分析</a>
+            <a href="#analysis-cash">資金繰り</a>
+            <a href="#report-output">レポート出力</a>
+            <a href="#data-upload">データアップロード</a>
+            <a href="#settings">設定・ヘルプ</a>
+        </nav>
+        """,
+        unsafe_allow_html=True,
+    )
 DEFAULT_PRIMARY_COLOR = "#2563EB"
 DEFAULT_ACCENT_COLOR = "#1E88E5"
 DEFAULT_SUCCESS_COLOR = "#16A34A"
@@ -1017,133 +1204,6 @@ def _render_analysis_navigation(active_label: str) -> str:
     return selected_label
 
 
-def _render_kpi_cards(cards: Sequence[Dict[str, object]]) -> None:
-    if not cards:
-        return
-    columns = st.columns(len(cards))
-    for column, card in zip(columns, cards):
-        yoy = card.get("yoy")
-        if yoy is None:
-            yoy_text = "前年比: データ不足"
-            delta_class = "neutral"
-        else:
-            arrow = "▲" if yoy >= 0 else "▼"
-            yoy_text = f"前年比: {arrow} {yoy*100:.1f}%"
-            delta_class = "positive" if yoy >= 0 else "negative"
-        target_diff = card.get("target_diff", 0.0)
-        target_class = "positive" if target_diff >= 0 else "negative"
-        target_unit = card.get("unit", "")
-        target_suffix = f" {target_unit}" if target_unit else ""
-        classes = ["kpi-card"]
-        if card.get("alert"):
-            classes.append("alert")
-        elif yoy is not None and yoy <= KPI_ALERT_THRESHOLD:
-            classes.append("alert")
-        elif target_diff < 0:
-            classes.append("caution")
-
-        card_html = (
-            f"""
-            <div class="{' '.join(classes)}">
-                <div class="label">{card.get('label', '')}</div>
-                <div class="value">{card.get('value_text', '')}</div>
-                <div class="delta {delta_class}">{yoy_text}</div>
-                <div class="target {target_class}">目標差: {target_diff:+,.0f}{target_suffix}</div>
-            </div>
-            """
-        )
-
-        action_conf = card.get("action") or {}
-        action_type = action_conf.get("type", "button") if action_conf else None
-        card_container = column.container()
-
-        if action_conf and action_type != "link":
-            wrapper = card_container.container()
-            wrapper.markdown("<div class=\"kpi-card-wrapper\">", unsafe_allow_html=True)
-            interactive_area = wrapper.container()
-            action_key = action_conf.get("key") or f"kpi-card-action-{card.get('label', '')}"
-            interactive_area.button(
-                action_conf.get("label", " "),
-                key=action_key,
-                help=action_conf.get("help"),
-                on_click=action_conf.get("on_click"),
-                args=action_conf.get("args", ()),
-                kwargs=action_conf.get("kwargs", {}),
-                type=action_conf.get("button_type", "secondary"),
-                use_container_width=True,
-            )
-            interactive_area.markdown(card_html, unsafe_allow_html=True)
-            wrapper.markdown("</div>", unsafe_allow_html=True)
-        elif action_conf.get("type") == "link":
-            url = action_conf.get("url")
-            if url:
-                card_container.markdown(
-                    f"""
-                    <a class=\"kpi-card-link\" href=\"{url}\" target=\"_blank\">
-                        {card_html}
-                    </a>
-                    """,
-                    unsafe_allow_html=True,
-                )
-            else:
-                card_container.markdown(card_html, unsafe_allow_html=True)
-        else:
-            card_container.markdown(card_html, unsafe_allow_html=True)
-
-
-def _render_kpi_highlights(
-    highlights: Sequence[Dict[str, object]], colors: Dict[str, str]
-) -> None:
-    """Render visually emphasised KPI highlight cards."""
-
-    if not highlights:
-        return
-
-    accent_light = _adjust_hex_color(colors["accent"], 0.65)
-    border_color = _adjust_hex_color(colors["accent"], -0.45)
-    card_html_list: List[str] = []
-    for highlight in highlights:
-        label = escape(str(highlight.get("label", "")))
-        value_text = str(highlight.get("value", "-"))
-        tooltip = highlight.get("tooltip")
-        tooltip_attr = f' title="{escape(str(tooltip))}"' if tooltip else ""
-        delta_ratio = highlight.get("delta")
-        delta_text = highlight.get("delta_text")
-        if delta_ratio is not None:
-            arrow = "▲" if float(delta_ratio) >= 0 else "▼"
-            formatted = f"{arrow} {abs(float(delta_ratio)) * 100:.1f}pt"
-            delta_text = delta_text or formatted
-            delta_color = colors["success"] if float(delta_ratio) >= 0 else colors["error"]
-        else:
-            delta_text = delta_text or "比較データなし"
-            delta_color = colors.get("warning", colors["text"])
-        target_label = highlight.get("target_label")
-        target_html = (
-            f"<div style=\"font-size:0.75rem;color:{colors['text']};opacity:0.65;margin-top:0.45rem;\">{escape(str(target_label))}</div>"
-            if target_label
-            else ""
-        )
-        card_html_list.append(
-            f"""
-            <div style="flex:1;min-width:220px;background-color:{accent_light};border-radius:0.9rem;padding:1.1rem;border:1px solid {border_color};box-shadow:0 8px 24px rgba(15, 23, 42, 0.08);"{tooltip_attr}>
-                <div style="font-size:0.85rem;color:{colors['text']};opacity:0.75;font-weight:500;">{label}</div>
-                <div style="font-size:2.1rem;font-weight:600;color:{colors['text']};margin:0.35rem 0 0.45rem;">{escape(value_text)}</div>
-                <div style="font-size:0.9rem;font-weight:600;color:{delta_color};">{escape(delta_text)}</div>
-                {target_html}
-            </div>
-            """
-        )
-
-    st.markdown(
-        f"""
-        <div style="border-radius:1.1rem;padding:1.35rem;background:linear-gradient(135deg, {accent_light} 0%, rgba(255,255,255,0.95) 65%);border:1px solid {border_color};margin-bottom:1.5rem;">
-            <div style="font-size:1rem;font-weight:600;color:{colors['primary']};margin-bottom:0.9rem;">主要KPIハイライト</div>
-            <div style="display:flex;flex-wrap:wrap;gap:1rem;">{''.join(card_html_list)}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
 
 def _cash_flow_summary(sales_df: pd.DataFrame, inventory_df: pd.DataFrame) -> Dict[str, float]:
     if sales_df.empty:
@@ -1207,11 +1267,20 @@ def _collect_alerts(
         stockouts = int((overview_df["stock_status"] == "在庫切れ").sum())
         excess = int((overview_df["stock_status"] == "在庫過多").sum())
         if stockouts > stockout_threshold:
+            stockout_detail = overview_df[overview_df["stock_status"] == "在庫切れ"]
+            focus_row = stockout_detail.head(1)
+            if not focus_row.empty:
+                row = focus_row.iloc[0]
+                cause_text = f"{row.get('store', '店舗不明')}の{row.get('product', '対象商品')}が安全在庫を下回っています。"
+            else:
+                cause_text = "安全在庫を下回るSKUが検出されました。"
             alerts.append(
                 {
                     "title": "欠品アラート",
                     "count": stockouts,
                     "message": f"安全在庫を下回る商品が{stockouts}品目あります。",
+                    "cause": cause_text,
+                    "recommendation": "在庫CSVを更新し、安全在庫の設定と発注計画を見直してください。",
                     "action": {
                         "label": "在庫タブで確認",
                         "callback": _activate_inventory_focus,
@@ -1221,11 +1290,22 @@ def _collect_alerts(
                 }
             )
         if excess > excess_threshold:
+            excess_detail = overview_df[overview_df["stock_status"] == "在庫過多"]
+            focus_row = excess_detail.sort_values(
+                "coverage_days", ascending=False, na_position="last"
+            ).head(1)
+            if not focus_row.empty:
+                row = focus_row.iloc[0]
+                cause_text = f"{row.get('store', '店舗不明')}の{row.get('product', '対象商品')}で在庫が滞留しています。"
+            else:
+                cause_text = "在庫過多と判定されたSKUがあります。"
             alerts.append(
                 {
                     "title": "過剰在庫アラート",
                     "count": excess,
                     "message": f"在庫過多の対象が{excess}品目あります。販促や発注調整を検討してください。",
+                    "cause": cause_text,
+                    "recommendation": "販促・値引きや発注キャンセルで在庫を圧縮し、滞留期間を短縮してください。",
                     "action": {
                         "label": "在庫タブへ",
                         "callback": _activate_inventory_focus,
@@ -1244,6 +1324,7 @@ def _collect_alerts(
             (pnl_df.get("operating_profit", pd.Series(dtype=float)) < 0).sum()
         )
         if deficit_threshold is not None and operating_profit_total < float(deficit_threshold):
+            cause_text = f"営業利益合計が目標 {float(deficit_threshold):,.0f} 円を下回っています。"
             alerts.append(
                 {
                     "title": "損益警告",
@@ -1252,6 +1333,8 @@ def _collect_alerts(
                         "営業利益が目標値を下回っています。"
                         f" 現在の合計: {operating_profit_total:,.0f} 円"
                     ),
+                    "cause": cause_text,
+                    "recommendation": "粗利タブで費用構造を確認し、固定費や売価の見直しを実施してください。",
                     "action": {
                         "label": "粗利タブを開く",
                         "callback": _activate_main_tab,
@@ -1261,11 +1344,23 @@ def _collect_alerts(
                 }
             )
         elif loss_stores > 0:
+            worst_store = (
+                pnl_df[pnl_df["operating_profit"] < 0]
+                .sort_values("operating_profit")
+                .head(1)
+            )
+            if not worst_store.empty:
+                row = worst_store.iloc[0]
+                cause_text = f"{row.get('store', '店舗不明')}が赤字（{row.get('operating_profit', 0):,.0f} 円）です。"
+            else:
+                cause_text = "複数店舗で営業赤字が発生しています。"
             alerts.append(
                 {
                     "title": "赤字店舗あり",
                     "count": loss_stores,
                     "message": f"営業赤字の店舗が{loss_stores}店あります。費目の見直しを検討してください。",
+                    "cause": cause_text,
+                    "recommendation": "粗利タブで店舗別損益を確認し、原価や固定費の改善策を検討してください。",
                     "action": {
                         "label": "粗利タブで確認",
                         "callback": _activate_main_tab,
@@ -1323,11 +1418,23 @@ def render_alert_center(
                 if contact_text:
                     st.caption(contact_text)
                 for alert in alerts:
+                    cause = escape(str(alert.get("cause", ""))) if alert.get("cause") else ""
+                    recommendation = (
+                        escape(str(alert.get("recommendation", "")))
+                        if alert.get("recommendation")
+                        else ""
+                    )
                     st.markdown(
                         f"<div class='alert-card {alert.get('severity', 'medium')}'>"
                         f"<div class='alert-card__title'>{alert.get('title')}</div>"
                         f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
                         f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
+                        + (f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>" if cause else "")
+                        + (
+                            f"<div class='alert-card__actions'><strong>推奨アクション:</strong> {recommendation}</div>"
+                            if recommendation
+                            else ""
+                        )
                         "</div>",
                         unsafe_allow_html=True,
                     )
@@ -1370,11 +1477,23 @@ def render_alert_center(
 
         columns = st.columns(len(alerts))
         for column, alert in zip(columns, alerts):
+            cause = escape(str(alert.get("cause", ""))) if alert.get("cause") else ""
+            recommendation = (
+                escape(str(alert.get("recommendation", "")))
+                if alert.get("recommendation")
+                else ""
+            )
             column.markdown(
                 f"<div class='alert-card {alert.get('severity', 'medium')}'>"
                 f"<div class='alert-card__title'>{alert.get('title')}</div>"
                 f"<div class='alert-card__count'>{alert.get('count', 0)}件</div>"
                 f"<div class='alert-card__message'>{alert.get('message', '')}</div>"
+                + (f"<div class='alert-card__cause'><strong>原因:</strong> {cause}</div>" if cause else "")
+                + (
+                    f"<div class='alert-card__actions'><strong>推奨アクション:</strong> {recommendation}</div>"
+                    if recommendation
+                    else ""
+                )
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -1489,7 +1608,7 @@ def render_dashboard_tab(
     fixed_costs_df: pd.DataFrame,
     inventory_df: pd.DataFrame,
 ) -> pd.DataFrame:
-    st.markdown("### 経営ダッシュボード")
+    _render_section_header("analysis-overview", "経営ダッシュボード", filters)
     colors = _resolve_theme_colors()
 
     filtered_costs = fixed_costs_df.copy()
@@ -1579,42 +1698,44 @@ def render_dashboard_tab(
     alert_settings = st.session_state.get("alert_settings", {})
     stockout_threshold = _coerce_int(alert_settings.get("stockout_threshold"), 0)
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "期間売上",
-                "value_text": _format_currency(total_sales),
-                "unit": "円",
-                "yoy": _compute_growth(total_sales, previous_sales),
-                "target_diff": total_sales - sales_target,
-            },
-            {
-                "label": "営業利益",
-                "value_text": _format_currency(operating_profit),
-                "unit": "円",
-                "yoy": _compute_growth(operating_profit, previous_operating_profit),
-                "target_diff": operating_profit - profit_target,
-            },
-            {
-                "label": "欠品品目数",
-                "value_text": _format_number(stockouts, "品目"),
-                "unit": "品目",
-                "yoy": None,
-                "target_diff": stockout_threshold - stockouts,
-                "alert": stockouts > stockout_threshold,
-            },
-            {
-                "label": "資金残高",
-                "value_text": _format_currency(cash_current["balance"]),
-                "unit": "円",
-                "yoy": _compute_growth(
-                    cash_current["balance"], cash_previous.get("balance")
-                ),
-                "target_diff": cash_current["balance"] - cash_target,
-                "alert": cash_current["balance"] < cash_target,
-            },
-        ]
-    )
+    dashboard_cards = [
+        kpi_cards.KpiCard(
+            label="期間売上",
+            value_text=_format_currency(total_sales),
+            unit="円",
+            yoy=_compute_growth(total_sales, previous_sales),
+            target_diff=total_sales - sales_target,
+            **_kpi_card_kwargs("期間売上"),
+        ),
+        kpi_cards.KpiCard(
+            label="営業利益",
+            value_text=_format_currency(operating_profit),
+            unit="円",
+            yoy=_compute_growth(operating_profit, previous_operating_profit),
+            target_diff=operating_profit - profit_target,
+            **_kpi_card_kwargs("営業利益"),
+        ),
+        kpi_cards.KpiCard(
+            label="欠品品目数",
+            value_text=_format_number(stockouts, "品目"),
+            unit="品目",
+            yoy=None,
+            target_diff=stockout_threshold - stockouts,
+            alert=stockouts > stockout_threshold,
+            **_kpi_card_kwargs("欠品品目数"),
+        ),
+        kpi_cards.KpiCard(
+            label="資金残高",
+            value_text=_format_currency(cash_current["balance"]),
+            unit="円",
+            yoy=_compute_growth(cash_current["balance"], cash_previous.get("balance")),
+            target_diff=cash_current["balance"] - cash_target,
+            alert=cash_current["balance"] < cash_target,
+            **_kpi_card_kwargs("資金残高"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(dashboard_cards)
+    kpi_cards.render_glossary(dashboard_cards)
     sales_growth_ratio = _compute_growth(total_sales, previous_sales)
     previous_sales_text = (
         _format_currency(previous_sales) if previous_sales is not None else "データ不足"
@@ -1638,46 +1759,41 @@ def render_dashboard_tab(
         else "データ不足"
     )
     highlight_metrics = [
-        {
-            "label": "売上高成長率",
-            "value": _format_ratio(sales_growth_ratio)
-            if sales_growth_ratio is not None
-            else "データ不足",
-            "delta": (
+        kpi_cards.KpiHighlight(
+            label="売上高成長率",
+            value=
+                _format_ratio(sales_growth_ratio)
+                if sales_growth_ratio is not None
+                else "データ不足",
+            delta=
                 sales_growth_ratio - TARGET_SALES_GROWTH
                 if sales_growth_ratio is not None
-                else None
-            ),
-            "target_label": f"目標 {TARGET_SALES_GROWTH:.0%} ／ 前年売上: {previous_sales_text}",
-            "tooltip": "前年同期間との比較です。社内基準は前年比+5%です。",
-        },
-        {
-            "label": "営業利益率",
-            "value": operating_margin_display,
-            "delta": (
+                else None,
+            target_label=f"目標 {TARGET_SALES_GROWTH:.0%} ／ 前年売上: {previous_sales_text}",
+            delta_text=None,
+            **_kpi_card_kwargs("売上高成長率"),
+        ),
+        kpi_cards.KpiHighlight(
+            label="営業利益率",
+            value=operating_margin_display,
+            delta=
                 operating_margin_ratio - TARGET_MARGIN_RATE
                 if operating_margin_ratio is not None
-                else None
-            ),
-            "target_label": f"目標 {TARGET_MARGIN_RATE:.0%} ／ 営業利益: {_format_currency(operating_profit)}",
-            "tooltip": (
-                "営業利益 ÷ 売上高。前年利益率: "
-                + previous_operating_margin_text
-            ),
-        },
-        {
-            "label": "キャッシュ比率",
-            "value": cash_ratio_display,
-            "delta": (
-                cash_ratio - TARGET_CASH_RATIO if cash_ratio is not None else None
-            ),
-            "target_label": f"目標 {TARGET_CASH_RATIO:.0%} ／ 資金残高: {_format_currency(cash_current['balance'])}",
-            "tooltip": (
-                "資金残高 ÷ 期間売上。前年比: " + previous_cash_ratio_text
-            ),
-        },
+                else None,
+            target_label=f"目標 {TARGET_MARGIN_RATE:.0%} ／ 営業利益: {_format_currency(operating_profit)}",
+            delta_text=None,
+            **_kpi_card_kwargs("営業利益率"),
+        ),
+        kpi_cards.KpiHighlight(
+            label="キャッシュ比率",
+            value=cash_ratio_display,
+            delta=cash_ratio - TARGET_CASH_RATIO if cash_ratio is not None else None,
+            target_label=f"目標 {TARGET_CASH_RATIO:.0%} ／ 資金残高: {_format_currency(cash_current['balance'])}",
+            delta_text=None,
+            **_kpi_card_kwargs("キャッシュ比率"),
+        ),
     ]
-    _render_kpi_highlights(highlight_metrics, colors)
+    kpi_cards.render_kpi_highlights(highlight_metrics)
     negative_stores = (
         int((pnl_df["operating_profit"] < 0).sum())
         if not pnl_df.empty
@@ -1737,7 +1853,7 @@ def render_dashboard_tab(
     if not action_items:
         action_items.append("- 主要な懸念事項はありません。現状の運用を継続してください。")
 
-    st.markdown("#### レポート出力")
+    _render_section_header("report-output", "レポート出力", filters)
     st.caption("現在のフィルター条件と主要指標をまとめたMarkdown／PDFレポートをダウンロードできます。")
     report.render_dashboard_report_downloads(
         "松屋 経営ダッシュボード レポート",
@@ -1761,7 +1877,7 @@ def render_sales_tab(
     comparison_mode: str,
 ) -> None:
     colors = _resolve_theme_colors()
-    st.markdown("### 売上分析")
+    _render_section_header("analysis-sales", "売上分析", filters)
 
     if "sales_tab_state" not in st.session_state:
         st.session_state["sales_tab_state"] = {
@@ -1900,31 +2016,34 @@ def render_sales_tab(
     )
 
     st.markdown("#### 指標カード")
-    _render_kpi_cards(
-        [
-            {
-                "label": "月次売上",
-                "value_text": _format_currency(kpis["total_sales"]),
-                "unit": "円",
-                "yoy": kpis.get("yoy_rate"),
-                "target_diff": kpis["total_sales"] - sales_target,
-            },
-            {
-                "label": "来客数",
-                "value_text": _format_number(total_customers, "人"),
-                "unit": "人",
-                "yoy": _compute_growth(total_customers, previous_customers),
-                "target_diff": total_customers - customer_target,
-            },
-            {
-                "label": "客単価",
-                "value_text": _format_currency(avg_unit_price),
-                "unit": "円",
-                "yoy": _compute_growth(avg_unit_price, previous_avg_price),
-                "target_diff": avg_unit_price - unit_price_target,
-            },
-        ]
-    )
+    sales_cards = [
+        kpi_cards.KpiCard(
+            label="月次売上",
+            value_text=_format_currency(kpis["total_sales"]),
+            unit="円",
+            yoy=kpis.get("yoy_rate"),
+            target_diff=kpis["total_sales"] - sales_target,
+            **_kpi_card_kwargs("月次売上"),
+        ),
+        kpi_cards.KpiCard(
+            label="来客数",
+            value_text=_format_number(total_customers, "人"),
+            unit="人",
+            yoy=_compute_growth(total_customers, previous_customers),
+            target_diff=total_customers - customer_target,
+            **_kpi_card_kwargs("来客数"),
+        ),
+        kpi_cards.KpiCard(
+            label="客単価",
+            value_text=_format_currency(avg_unit_price),
+            unit="円",
+            yoy=_compute_growth(avg_unit_price, previous_avg_price),
+            target_diff=avg_unit_price - unit_price_target,
+            **_kpi_card_kwargs("客単価"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(sales_cards)
+    kpi_cards.render_glossary(sales_cards)
 
     breakdown_column = sales.resolve_breakdown_column(
         view_filters.breakdown_dimension
@@ -2215,7 +2334,7 @@ def render_products_tab(
     comparison_sales: pd.DataFrame,
     filters: transformers.FilterState,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    st.markdown("### 商品分析")
+    _render_section_header("analysis-products", "商品分析", filters)
 
     category_options = sorted(sales_df["category"].dropna().unique().tolist())
     category_choices = [transformers.ALL_CATEGORIES, *category_options]
@@ -2263,24 +2382,26 @@ def render_products_tab(
     target_share = 0.6
     target_value = total_sales * target_share
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "トップ5売上",
-                "value_text": f"{top5_sales:,.0f} 円",
-                "unit": "円",
-                "yoy": _compute_growth(top5_sales, previous_top5),
-                "target_diff": top5_sales - target_value,
-            },
-            {
-                "label": "トップ5構成比",
-                "value_text": f"{share*100:.1f}%",
-                "unit": "%",
-                "yoy": None,
-                "target_diff": (share - target_share) * 100,
-            },
-        ]
-    )
+    product_cards = [
+        kpi_cards.KpiCard(
+            label="トップ5売上",
+            value_text=f"{top5_sales:,.0f} 円",
+            unit="円",
+            yoy=_compute_growth(top5_sales, previous_top5),
+            target_diff=top5_sales - target_value,
+            **_kpi_card_kwargs("トップ5売上"),
+        ),
+        kpi_cards.KpiCard(
+            label="トップ5構成比",
+            value_text=f"{share*100:.1f}%",
+            unit="%",
+            yoy=None,
+            target_diff=(share - target_share) * 100,
+            **_kpi_card_kwargs("トップ5構成比"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(product_cards)
+    kpi_cards.render_glossary(product_cards)
 
     abc_df = products.abc_analysis(working_sales, working_comparison)
     if abc_df.empty:
@@ -2461,7 +2582,7 @@ def render_profitability_tab(
     navigate: Optional[Callable[[str], None]] = None,
 ) -> pd.DataFrame:
     colors = _resolve_theme_colors()
-    st.markdown("### 利益管理")
+    _render_section_header("analysis-profit", "利益管理", filters)
 
     if "profit_tab_state" not in st.session_state:
         st.session_state["profit_tab_state"] = {
@@ -2565,31 +2686,34 @@ def render_profitability_tab(
         previous_gross / previous_sales_total if previous_sales_total else None
     )
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "粗利",
-                "value_text": _format_currency(gross_profit),
-                "unit": "円",
-                "yoy": _compute_growth(gross_profit, previous_gross),
-                "target_diff": gross_profit - total_sales * TARGET_MARGIN_RATE,
-            },
-            {
-                "label": "粗利率",
-                "value_text": f"{gross_margin*100:.1f}%",
-                "unit": "%",
-                "yoy": _compute_growth(gross_margin, previous_margin),
-                "target_diff": (gross_margin - TARGET_MARGIN_RATE) * 100,
-            },
-            {
-                "label": "営業利益",
-                "value_text": _format_currency(operating_profit),
-                "unit": "円",
-                "yoy": _compute_growth(operating_profit, previous_operating),
-                "target_diff": operating_profit - total_sales * TARGET_MARGIN_RATE,
-            },
-        ]
-    )
+    profit_cards = [
+        kpi_cards.KpiCard(
+            label="粗利",
+            value_text=_format_currency(gross_profit),
+            unit="円",
+            yoy=_compute_growth(gross_profit, previous_gross),
+            target_diff=gross_profit - total_sales * TARGET_MARGIN_RATE,
+            **_kpi_card_kwargs("粗利"),
+        ),
+        kpi_cards.KpiCard(
+            label="粗利率",
+            value_text=f"{gross_margin*100:.1f}%",
+            unit="%",
+            yoy=_compute_growth(gross_margin, previous_margin),
+            target_diff=(gross_margin - TARGET_MARGIN_RATE) * 100,
+            **_kpi_card_kwargs("粗利率"),
+        ),
+        kpi_cards.KpiCard(
+            label="営業利益",
+            value_text=_format_currency(operating_profit),
+            unit="円",
+            yoy=_compute_growth(operating_profit, previous_operating),
+            target_diff=operating_profit - total_sales * TARGET_MARGIN_RATE,
+            **_kpi_card_kwargs("営業利益"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(profit_cards)
+    kpi_cards.render_glossary(profit_cards)
 
     trend_sales_df = sales_df.copy()
     trend_comparison_df = comparison_sales.copy()
@@ -2915,7 +3039,7 @@ def render_inventory_tab(
     filters: transformers.FilterState,
 ) -> None:
     colors = _resolve_theme_colors()
-    st.markdown("### 在庫分析")
+    _render_section_header("analysis-inventory", "在庫分析", filters)
 
     store_options = sorted(inventory_df["store"].dropna().unique().tolist())
     category_options = sorted(inventory_df["category"].dropna().unique().tolist())
@@ -3136,40 +3260,41 @@ def render_inventory_tab(
             )
             warning_cols[1].metric("欠品数", f"{stockouts}件")
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "過剰在庫数",
-                "value_text": _format_number(safety_excess, "品目"),
-                "unit": "品目",
-                "yoy": None,
-                "target_diff": excess_threshold - safety_excess,
-                "alert": safety_excess > excess_threshold,
-            },
-            {
-                "label": "安全在庫欠品数",
-                "value_text": _format_number(stockouts, "品目"),
-                "unit": "品目",
-                "yoy": None,
-                "target_diff": stockout_threshold - stockouts,
-                "alert": stockouts > stockout_threshold,
-            },
-            {
-                "label": "平均在庫回転率",
-                "value_text": (
-                    f"{avg_turnover:.1f} 回"
-                    + (
-                        f"<div class='sub-value'>残日数 {avg_coverage:.1f} 日</div>"
-                        if avg_coverage is not None
-                        else "<div class='sub-value muted'>残日数 データ不足</div>"
-                    )
-                ),
-                "unit": "回",
-                "yoy": None,
-                "target_diff": avg_turnover - 8,
-            },
-        ]
+    coverage_text = (
+        f"残日数 {avg_coverage:.1f} 日" if avg_coverage is not None else "残日数 データ不足"
     )
+    inventory_cards = [
+        kpi_cards.KpiCard(
+            label="過剰在庫数",
+            value_text=_format_number(safety_excess, "品目"),
+            unit="品目",
+            yoy=None,
+            target_diff=excess_threshold - safety_excess,
+            alert=safety_excess > excess_threshold,
+            **_kpi_card_kwargs("過剰在庫数"),
+        ),
+        kpi_cards.KpiCard(
+            label="安全在庫欠品数",
+            value_text=_format_number(stockouts, "品目"),
+            unit="品目",
+            yoy=None,
+            target_diff=stockout_threshold - stockouts,
+            alert=stockouts > stockout_threshold,
+            **_kpi_card_kwargs("安全在庫欠品数"),
+        ),
+        kpi_cards.KpiCard(
+            label="平均在庫回転率",
+            value_text=f"{avg_turnover:.1f} 回",
+            unit="回",
+            yoy=None,
+            target_diff=avg_turnover - 8,
+            sub_value_text=coverage_text,
+            sub_value_muted=avg_coverage is None,
+            **_kpi_card_kwargs("平均在庫回転率"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(inventory_cards)
+    kpi_cards.render_glossary(inventory_cards)
 
     rolling_window = int(
         overview_df.get("analysis_window", pd.Series([inventory.DEFAULT_ROLLING_WINDOW]))
@@ -3632,39 +3757,149 @@ def render_data_management_tab(
             st.dataframe(fixed_issues, use_container_width=True)
 
     st.subheader("CSVアップロード")
+    st.caption(
+        "売上・在庫・固定費のCSVをまとめてドロップすると自動でデータ種別を判別します。"
+        " テンプレートの列構成と一致しているかをご確認ください。"
+    )
     uploaded_files = st.file_uploader(
         "3種類のCSVをまとめてアップロード",
         type="csv",
         accept_multiple_files=True,
         key="data_tab_uploader",
     )
-    mapping: Dict[str, object] = {}
-    if uploaded_files:
-        st.caption("各ファイルのデータ種別を選択してください")
-        label_to_key = {v: k for k, v in dataset_labels.items()}
-        for idx, file in enumerate(uploaded_files):
-            choice = st.selectbox(
-                f"{file.name}",
-                list(dataset_labels.values()),
-                key=f"data_tab_choice_{file.name}_{idx}",
-            )
-            mapping[label_to_key[choice]] = file
-        def _apply_uploaded_files() -> None:
-            new_datasets, validations = _handle_csv_uploads(mapping, baseline)
-            st.session_state["current_datasets"] = new_datasets
-            st.session_state["data_tab_validations"] = validations
-            st.session_state["current_source"] = "csv"
-            st.session_state["last_data_update"] = datetime.now()
-            _update_metadata_from_uploads(mapping, validations)
-            _ensure_dataset_metadata(new_datasets, default_source="csv")
-            st.success("アップロードを反映しました。")
-            trigger_rerun()
 
-        st.button(
-            "アップロードを取り込む",
-            key="data_tab_apply_upload",
-            on_click=_apply_uploaded_files,
-        )
+    MAX_UPLOAD_MB = 15
+    detection_summary: List[Dict[str, str]] = []
+    detection_defaults: Dict[str, Optional[str]] = {}
+    file_payloads: Dict[str, bytes] = {}
+    label_to_key = {v: k for k, v in dataset_labels.items()}
+    label_options = list(dataset_labels.values())
+    has_detection_errors = False
+
+    def _infer_dataset(columns: Sequence[str]) -> Tuple[Optional[str], List[str]]:
+        normalized = {col.strip().lower() for col in columns}
+        best_key: Optional[str] = None
+        best_match = 0
+        missing_for_best: List[str] = []
+        for dataset_key, spec in sidebar.DATASET_COLUMN_SPEC.items():
+            required = {name.lower() for name, _ in spec}
+            match_count = len(required & normalized)
+            if match_count == len(required):
+                return dataset_key, []
+            if match_count > best_match:
+                best_match = match_count
+                best_key = dataset_key
+                missing_for_best = sorted(required - normalized)
+        if best_match == 0:
+            return None, []
+        return best_key, missing_for_best
+
+    if uploaded_files:
+        st.write("### 自動判別結果")
+        for file in uploaded_files:
+            raw_bytes = file.getvalue()
+            file_payloads[file.name] = raw_bytes
+            size_mb = len(raw_bytes) / (1024 ** 2)
+            messages: List[str] = []
+            detected_key: Optional[str] = None
+            missing_columns: List[str] = []
+
+            if size_mb > MAX_UPLOAD_MB:
+                messages.append(
+                    f"ファイルサイズが {size_mb:.1f}MB です。{MAX_UPLOAD_MB}MB 以下に分割してください。"
+                )
+                has_detection_errors = True
+
+            buffer = io.BytesIO(raw_bytes)
+            buffer.name = file.name
+            try:
+                sample = pd.read_csv(buffer, nrows=5)
+                detected_key, missing_columns = _infer_dataset(sample.columns.tolist())
+                if detected_key is None:
+                    messages.append(
+                        "列名からデータ種別を判別できませんでした。テンプレートの列構成と一致させてください。"
+                    )
+                    has_detection_errors = True
+                elif missing_columns:
+                    messages.append(
+                        "不足列: "
+                        + ", ".join(missing_columns)
+                        + " ／ テンプレートの該当列を追加してください。"
+                    )
+                    has_detection_errors = True
+            except Exception as exc:
+                detected_key = None
+                messages.append(f"読み込みエラー: {exc}")
+                has_detection_errors = True
+            finally:
+                buffer.seek(0)
+
+            detection_defaults[file.name] = detected_key
+            summary_label = dataset_labels.get(detected_key, "判別不可")
+            detection_summary.append(
+                {
+                    "ファイル名": file.name,
+                    "推定種別": summary_label,
+                    "サイズ(MB)": f"{size_mb:.2f}",
+                    "チェック結果": " / ".join(messages) if messages else "問題なし",
+                }
+            )
+
+        if detection_summary:
+            detection_df = pd.DataFrame(detection_summary)
+            st.dataframe(detection_df, use_container_width=True, hide_index=True)
+
+        with st.form("data_upload_form"):
+            selections: Dict[str, str] = {}
+            for idx, file in enumerate(uploaded_files):
+                default_key = detection_defaults.get(file.name)
+                default_label = (
+                    dataset_labels.get(default_key, label_options[0])
+                    if label_options
+                    else ""
+                )
+                selection_label = st.selectbox(
+                    f"{file.name} の取込種別",
+                    label_options,
+                    index=label_options.index(default_label)
+                    if default_label in label_options
+                    else 0,
+                    key=f"data_tab_choice_{file.name}_{idx}",
+                )
+                selections[file.name] = label_to_key[selection_label]
+
+            submit_upload = st.form_submit_button(
+                "アップロードを取り込む",
+                disabled=has_detection_errors,
+            )
+
+        if uploaded_files and has_detection_errors:
+            st.error(
+                "ファイルの内容に問題があります。チェック結果の指示に従って修正してから再度アップロードしてください。"
+            )
+
+        if uploaded_files and not has_detection_errors and submit_upload:
+            if len(set(selections.values())) < len(selections.values()):
+                st.error(
+                    "同じデータ種別が複数選択されています。売上／在庫／固定費をそれぞれ一意に指定してください。"
+                )
+            else:
+                mapping: Dict[str, object] = {}
+                for file in uploaded_files:
+                    dataset_key = selections[file.name]
+                    buffer = io.BytesIO(file_payloads[file.name])
+                    buffer.name = file.name
+                    mapping[dataset_key] = buffer
+
+                new_datasets, validations = _handle_csv_uploads(mapping, baseline)
+                st.session_state["current_datasets"] = new_datasets
+                st.session_state["data_tab_validations"] = validations
+                st.session_state["current_source"] = "csv"
+                st.session_state["last_data_update"] = datetime.now()
+                _update_metadata_from_uploads(mapping, validations)
+                _ensure_dataset_metadata(new_datasets, default_source="csv")
+                st.success("アップロードを反映しました。分析全体に即時反映されます。")
+                trigger_rerun()
 
     with st.expander("テンプレートをダウンロード", expanded=False):
         for key, content in templates.items():
@@ -3682,7 +3917,6 @@ def render_data_management_tab(
 def render_help_settings_page() -> None:
     """Render the help and settings guidance page."""
 
-    st.markdown("### ヘルプ／設定")
     st.caption(
         "ダッシュボードの使い方と設定手順をまとめています。必要に応じてメンバーと共有してください。"
     )
@@ -3690,7 +3924,7 @@ def render_help_settings_page() -> None:
     st.markdown("#### 基本操作")
     st.markdown(
         """
-        - 左サイドバーの「ページ切替」からダッシュボード／データ管理／ヘルプページを移動できます。
+        - 左サイドバーのナビゲーションから分析・データアップロード・レポート・設定の各セクションにジャンプできます。
         - 上部の共通フィルターで期間・店舗・カテゴリを変更すると、売上／粗利／在庫／資金タブすべてに反映されます。
         - 画面上部の「アラートセンター」では、在庫欠品や赤字など重要な通知と対象タブへのショートカットを確認できます。
         - データ管理ページでは、取込状況の確認・異常値チェック・カテゴリマッピングまで一括で実施できます。
@@ -3956,38 +4190,41 @@ def render_cash_tab(
     filters: transformers.FilterState,
 ) -> None:
     colors = _resolve_theme_colors()
-    st.subheader("資金繰りダッシュボード")
+    _render_section_header("analysis-cash", "資金繰りダッシュボード", filters)
 
     cash_current = _cash_flow_summary(sales_df, inventory_df)
     cash_previous = _cash_flow_summary(comparison_sales, inventory_df)
     total_sales = float(sales_df["sales_amount"].sum())
     cash_target = total_sales * TARGET_CASH_RATIO if total_sales else cash_current["balance"]
 
-    _render_kpi_cards(
-        [
-            {
-                "label": "資金残高",
-                "value_text": _format_currency(cash_current["balance"]),
-                "unit": "円",
-                "yoy": _compute_growth(cash_current["balance"], cash_previous.get("balance")),
-                "target_diff": cash_current["balance"] - cash_target,
-            },
-            {
-                "label": "入金予定",
-                "value_text": _format_currency(cash_current["receivable"]),
-                "unit": "円",
-                "yoy": _compute_growth(cash_current["receivable"], cash_previous.get("receivable")),
-                "target_diff": cash_current["receivable"],
-            },
-            {
-                "label": "支払予定",
-                "value_text": _format_currency(cash_current["payable"]),
-                "unit": "円",
-                "yoy": _compute_growth(cash_current["payable"], cash_previous.get("payable")),
-                "target_diff": -cash_current["payable"],
-            },
-        ]
-    )
+    cash_cards = [
+        kpi_cards.KpiCard(
+            label="資金残高",
+            value_text=_format_currency(cash_current["balance"]),
+            unit="円",
+            yoy=_compute_growth(cash_current["balance"], cash_previous.get("balance")),
+            target_diff=cash_current["balance"] - cash_target,
+            **_kpi_card_kwargs("資金残高"),
+        ),
+        kpi_cards.KpiCard(
+            label="入金予定",
+            value_text=_format_currency(cash_current["receivable"]),
+            unit="円",
+            yoy=_compute_growth(cash_current["receivable"], cash_previous.get("receivable")),
+            target_diff=cash_current["receivable"],
+            **_kpi_card_kwargs("入金予定"),
+        ),
+        kpi_cards.KpiCard(
+            label="支払予定",
+            value_text=_format_currency(cash_current["payable"]),
+            unit="円",
+            yoy=_compute_growth(cash_current["payable"], cash_previous.get("payable")),
+            target_diff=-cash_current["payable"],
+            **_kpi_card_kwargs("支払予定"),
+        ),
+    ]
+    kpi_cards.render_kpi_cards(cash_cards)
+    kpi_cards.render_glossary(cash_cards)
 
     granularity = filters.period_granularity or "monthly"
 
@@ -4882,9 +5119,6 @@ def main() -> None:
     _inject_global_styles()
     if MAIN_TAB_KEY not in st.session_state:
         st.session_state[MAIN_TAB_KEY] = MAIN_TAB_LABELS[0]
-    if "active_page" not in st.session_state:
-        st.session_state["active_page"] = PAGE_OPTIONS[0]
-
     sample_files = data_loader.available_sample_files()
     templates = data_loader.available_templates()
     sample_files_for_ui = {k: str(v) for k, v in sample_files.items()}
@@ -5032,116 +5266,106 @@ def main() -> None:
     )
     st.session_state["latest_alerts"] = alerts
     render_alert_center(alerts, sidebar_state.get("alert_settings"))
+    _render_sidebar_navigation()
 
-    st.sidebar.header("ページ切替")
-    current_page = st.session_state.get("active_page", PAGE_OPTIONS[0])
-    page_choice = st.sidebar.radio(
-        "表示ページ",
-        PAGE_OPTIONS,
-        index=PAGE_OPTIONS.index(current_page)
-        if current_page in PAGE_OPTIONS
-        else 0,
-        key="page_selector",
+    active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
+    if active_tab not in MAIN_TAB_LABELS:
+        active_tab = MAIN_TAB_LABELS[0]
+
+    header_container = st.container()
+    with header_container:
+        login_col, control_col = st.columns([1, 3])
+        login_name = st.session_state.get("login_user", "経営者A")
+        login_col.markdown(f"#### 👤 {login_name}")
+        with control_col:
+            global_filters = render_global_filter_bar(
+                stores,
+                categories,
+                default_period=default_period,
+                bounds=bounds,
+            )
+
+    filtered_sales = transformers.apply_filters(datasets["sales"], global_filters)
+    dashboard_comparison = _comparison_dataset(
+        datasets["sales"], global_filters, "previous_period"
     )
-    st.session_state["active_page"] = page_choice
 
-    if page_choice == "ダッシュボード":
-        active_tab = st.session_state.get(MAIN_TAB_KEY, MAIN_TAB_LABELS[0])
-        if active_tab not in MAIN_TAB_LABELS:
-            active_tab = MAIN_TAB_LABELS[0]
+    pnl_baseline = profitability.store_profitability(
+        filtered_sales,
+        datasets["fixed_costs"],
+    )
 
-        header_container = st.container()
-        with header_container:
-            login_col, control_col = st.columns([1, 3])
-            login_name = st.session_state.get("login_user", "経営者A")
-            login_col.markdown(f"#### 👤 {login_name}")
-            with control_col:
-                global_filters = render_global_filter_bar(
-                    stores,
-                    categories,
-                    default_period=default_period,
-                    bounds=bounds,
-                )
+    pnl_df = render_dashboard_tab(
+        filtered_sales,
+        dashboard_comparison,
+        global_filters,
+        datasets["fixed_costs"],
+        datasets["inventory"],
+    )
+    st.session_state["latest_pnl_df"] = pnl_df
 
-        filtered_sales = transformers.apply_filters(
-            datasets["sales"], global_filters
+    active_tab = _render_analysis_navigation(active_tab)
+    st.session_state[MAIN_TAB_KEY] = active_tab
+
+    if active_tab == "売上":
+        render_sales_tab(
+            datasets["sales"],
+            global_filters,
+            channels,
+            comparison_mode="yoy",
         )
-        dashboard_comparison = _comparison_dataset(
-            datasets["sales"], global_filters, "previous_period"
+        st.divider()
+        abc_df, _ = render_products_tab(
+            filtered_sales, dashboard_comparison, global_filters
         )
-
-        pnl_baseline = profitability.store_profitability(
-            filtered_sales,
-            datasets["fixed_costs"],
-        )
-
-        pnl_df = render_dashboard_tab(
+        st.session_state["latest_abc_df"] = abc_df
+    elif active_tab == "粗利":
+        pnl_view = render_profitability_tab(
             filtered_sales,
             dashboard_comparison,
-            global_filters,
             datasets["fixed_costs"],
+            global_filters,
+        )
+        st.session_state["latest_pnl_df"] = pnl_view
+    elif active_tab == "在庫":
+        abc_df_cached = st.session_state.get("latest_abc_df")
+        if abc_df_cached is None:
+            abc_df_cached = products.abc_analysis(
+                filtered_sales, dashboard_comparison
+            )
+            st.session_state["latest_abc_df"] = abc_df_cached
+        render_inventory_tab(
+            filtered_sales,
             datasets["inventory"],
+            abc_df_cached,
+            global_filters,
         )
-        st.session_state["latest_pnl_df"] = pnl_df
+    elif active_tab == "資金":
+        pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
+        render_cash_tab(
+            filtered_sales,
+            dashboard_comparison,
+            datasets["inventory"],
+            pnl_for_cash,
+            global_filters,
+        )
 
-        active_tab = _render_analysis_navigation(active_tab)
-        st.session_state[MAIN_TAB_KEY] = active_tab
+    st.divider()
+    _render_section_header("data-upload", "データアップロード", global_filters)
+    integration_display = integration_result or st.session_state.get(
+        "latest_api_result"
+    )
+    render_data_management_tab(
+        validation_results,
+        integration_display,
+        baseline,
+        sample_files_for_ui,
+        templates,
+    )
 
-        if active_tab == "売上":
-            render_sales_tab(
-                datasets["sales"],
-                global_filters,
-                channels,
-                comparison_mode="yoy",
-            )
-            st.divider()
-            abc_df, _ = render_products_tab(
-                filtered_sales, dashboard_comparison, global_filters
-            )
-            st.session_state["latest_abc_df"] = abc_df
-        elif active_tab == "粗利":
-            pnl_view = render_profitability_tab(
-                filtered_sales,
-                dashboard_comparison,
-                datasets["fixed_costs"],
-                global_filters,
-            )
-            st.session_state["latest_pnl_df"] = pnl_view
-        elif active_tab == "在庫":
-            abc_df_cached = st.session_state.get("latest_abc_df")
-            if abc_df_cached is None:
-                abc_df_cached = products.abc_analysis(
-                    filtered_sales, dashboard_comparison
-                )
-                st.session_state["latest_abc_df"] = abc_df_cached
-            render_inventory_tab(
-                filtered_sales,
-                datasets["inventory"],
-                abc_df_cached,
-                global_filters,
-            )
-        elif active_tab == "資金":
-            pnl_for_cash = st.session_state.get("latest_pnl_df", pnl_baseline)
-            render_cash_tab(
-                filtered_sales,
-                dashboard_comparison,
-                datasets["inventory"],
-                pnl_for_cash,
-                global_filters,
-            )
-    elif page_choice == "データ管理":
-        integration_display = integration_result or st.session_state.get(
-            "latest_api_result"
-        )
-        render_data_management_tab(
-            validation_results,
-            integration_display,
-            baseline,
-            sample_files_for_ui,
-            templates,
-        )
-    else:
-        render_help_settings_page()
+    st.divider()
+    _render_section_header("settings", "設定・ヘルプ")
+    render_help_settings_page()
 
 if __name__ == "__main__":
     main()
